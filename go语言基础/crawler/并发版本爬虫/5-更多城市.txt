@@ -1,0 +1,58 @@
+我们之前实现的解析城市的模块，只能解析第一页的用户列表；应该继续实现解析第二页、第三页的以及一些其他的链接，只要链接点进去和用户列表格式一样就行。
+
+main.go
+
+func main() {
+	e := engine.ConcurrentEngine{
+		Scheduler: &scheduler.QueuedScheduler{},
+		WorkerCount: 100,
+	}
+	
+	e.Run(engine.Request{
+		Url: "http://www.zhenai.com/zhenghun/shanghai", //先只跑一个城市，获取上海城市的用户列表
+		ParserFunc: parser.ParseCity,
+	})
+}
+
+
+下面就要加上下一页，还有其他链接的访问，查看页面，找出url的规律，就可以定义正则表达式；
+parser/city.go
+
+var (
+	profileRe = regexp.MustCompile(
+		`<a href="(http://album.zhenai.com/u/[0-9]+)"[^>]*>([^<]+)</a>`)
+	cityUrlRe = regexp.MustCompile(
+		`href="(http://www.zhenai.com/zhenghun/[^"]+)"`)
+)
+
+//cityUrlRe定义的正则就是要匹配的下一页以及其他url链接
+func ParseCity(
+	contents []byte, _ string) engine.ParseResult {
+	matches := profileRe.FindAllSubmatch(
+		contents, -1)
+
+	result := engine.ParseResult{}
+	for _, m := range matches {
+		result.Requests = append(
+			result.Requests, engine.Request{
+				Url: string(m[1]),
+				Parser: NewProfileParser(
+					string(m[2])),
+			})
+	}
+
+	matches = cityUrlRe.FindAllSubmatch(     //在增加一个FindAllSubmatch，查找下一页以及其他url链接
+		contents, -1)
+	for _, m := range matches {              
+		result.Requests = append(result.Requests,
+			engine.Request{
+				Url: string(m[1]),
+				Parser: ParseCity,
+			})
+	}
+
+	return result
+}
+
+
+执行后就可以看到很多用户了，但是还有很多是重复的人，需要去重

@@ -1,0 +1,75 @@
+url去重的几种方法：
+
+1. 哈希表  就是map , 如果url太长的话，会比较占内存空间
+2. 先计算MD5后，在存到哈希表里    MD5的长度是固定的而且也不长，所以计算MD5后可以存到哈希表里。但是MD5计算比较耗时一些
+3. 使用bloom filter 多重哈希结构
+以上三种方法都是存在机器内存中的
+
+4. 使用redis存储去重
+
+
+engine/concurrent.go
+
+for _, request := range result.Requests {   
+	if isDuplicate(request.Url) {  //在提交request到scheduer之前，先判断这个url是否之前提交过;如果有就跳过
+		continue
+	}
+	e.Scheduler.Submit(request)
+}
+		
+
+//定义去重函数		
+var visitedUrls = make(map[string]bool)
+func isDuplicate(url string) bool {
+	if visitedUrls[url] {
+		return true
+	}
+
+	visitedUrls[url] = true
+	return false
+}
+
+
+当程序退出后，哈希表里的数据就丢失了，如果要解决这个问题，可以在程序退出前把数据存起来或者使用redis存储
+
+engine/concurrent.go
+
+profileCount := 0  //计数
+for _, item := range result.Items {
+		profile, ok := item.(model.Profile)           //类型断言，判断item变量是否为model.Profile类型
+													//profile是具体的值,ok是bool类型，是不是mode.Profile类型
+		if ok {
+			log.Printf("Got item #%d: %v",itemCount,item)
+			profileCount++	
+		}
+
+}
+
+
+---------------------------------------------------------
+
+更多用户(获取"猜你喜欢"的url地址在去查找用户信息)
+
+parse/profile.go
+
+//获取猜你喜欢的正则
+var guessRe = regexp.MustCompile(`<a class="exp-user-name"[^>]*href="(http://album.zhenai.com/u/[\d]+)">([^<]+)</a>`)
+
+matches := guessRe.FindAllSubmatch(content,-1)
+
+//每找到一个人就加一下requests
+for _, m := range matches {
+	name := string(m[2])
+	result.Requests = append(result.Requests,
+								engine.Request{
+									Url: string(m[1]),
+									 //ParserFunc是一个匿名函数;这个匿名函数有一个参数c []byte; 
+									 //当r.ParserFunc(body)的时候才会执行匿名函数并返回ParserProfile(c, name)
+									 //也就是说这里func(c []byte)这里只是赋值，并不会真正调用
+									ParserFunc: func(c []byte) engine.ParseResult { 
+											return ParserProfile(c, name)
+										},
+										
+								}
+	)
+}

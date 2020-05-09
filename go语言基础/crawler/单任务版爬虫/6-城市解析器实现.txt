@@ -1,0 +1,38 @@
+
+目录zhenai/parse/city.go
+
+城市解析器解出来的是用户名和对应的url
+
+const cityRe = `<a href="(http://www.zhenai.com/zhenghun/[0-9a-z]+)"[^>]*>([^<]+)</a>`
+
+//先将要匹配的Url拷过来，在一点点做正则  [^>]+  匹配不是>的其他字符串
+//const cityRe = `<a href="http://www.zhenai.com/zhenghun/123456789" target="_blank">名字</a>`
+
+func ParseCity(contents []byte) engine.ParseResult {
+	re := regexp.MustCompile(cityRe) 
+	matches := re.FindAllSubmatch(contents,-1)
+	
+	result := engine.ParseResult{}
+	for _,m := matches {
+		result.Items = append(result.Items, "User " + m[2])  把用户名称写到Items里
+		result.Requests = append(result.Requests, engine.Request{
+							"Url":string(m[1]),
+							"ParserFunc": engine.NilParser,//这边应该写用户解析器，因为还没实现，所以先写一个空的解析器
+													//ParserFunc的值是一个函数类型 func([]byte) ParseResult
+													//当engine调用的时候在加参数 r.ParserFunc(body)
+		})
+		
+		fmt.Printf("User: %s, URL: %s",m[2], m[1])
+	}
+
+	fmt.Printf("Matches found: %d\n", len(matches))
+	
+	return result
+}
+
+
+城市解析器ParseCity实现后，就可以在城市列表解析器中调用城市解析器
+
+zhenai/parse/citylist.go
+
+"ParserFunc": ParseCity

@@ -1,0 +1,208 @@
+scheduler实现: 并发分发request
+
+
+简单调度器的架构:
+													reuqest                            							request
+(out chan, 接收worker发过来的数据)engine --------------------------> scheduler(chan,和worker in chan是同一个)--------------> (in chan)worker,  worker(out chan) -------> engine
+											(通过函数调用传递request)
+		 
+		 
+一、第一次engine向scheduler发送reuqest(种子页面)的方式不是通过chan，而是通过函数的方式e.Scheduler.Submit(r)
+二、scheduler发送request是通过in chan管道发送的， worker通过in chan管道接收处理后，在通过out chan发送给engine
+三、engine不断从out chan接收数据
+
+1. engine/simple.go 将fetcher和parser两个模块合并为worker
+
+func worker(r Request) (ParseResult, error) {
+	log.Printf("Fetching: %s", r.Url)
+	body, err := fetcher.Fetch(r.Url)
+	if err != nil {
+		log.Printf("Fetcher: error  fetching url %s: %v",r.Url, err)
+		return ParseResult{},err
+	}
+	return r.ParserFunc(body),nil
+}
+worker函数接收request{Url ParserFunc}后，通过fetcher取到url的内容后，在通过r.ParserFunc(body)去解析
+ 
+2. Engine模块 新建一个engine/concurrent.go， 定义一个可以并发执行的engine
+
+package engine
+
+type ConcurrentEngine struct {
+	Scheduler Scheduler       //肚子里放一个scheduler; 实例化结构体的时候把实现了Scheduler接口的对象赋給它
+	WorkerCount int  //定义worker的数量
+}
+
+//抽象出两个方法Submit ConfigureMasterWorkerChan; Scheduler模块会实现这两个方法
+type Scheduler interface {   //scheduler是一个Interface, 它实现了submit方法
+	Submit(Request)
+	ConfigureMasterWorkerChan(chan Request)
+}
+
+func (e *ConcurrentEngine) Run(seeds ...Request) {
+	
+	//因为所有的worker共用一个channel，所以先创建两个共用的channel,一个进，一个出
+	//scheduler会通过in chan发送数据给worker; worker通过in chan接收数据, 处理完成后发送out chan
+	in := make(chan Request)         //chan类型是Request {Url Parse}
+	out := make(chan ParseResult)     //chan类型是ParseResult {Requests Items}
+	
+	e.Scheduler.ConfigureMasterWorkerChan(in) //把in管道送进scheduler调度器里(scheduler里的chan和 worker中的in chan是同一个chan，所有要传给scheduler)
+	
+	for i:=0; i < e.WorkerCount; i++ { //开n个gorouting执行createWorker
+		createWorker(in,out)         //createWorker函数内部要对in通道进行接收，out通道进行send
+	}								 //createWorker处理完数据后，将数据发送到out通道
+
+	//第一次engine要把种子页面传给scheduler; 后面就是通过for{result := <- out}来接收了
+	for _, r := range seeds {
+		e.Scheduler.Submit(r)   //将种子页面扔给scheduler； 这里需要处理两个问题 1. scheduler从哪里来 2. scheduler是个什么东西
+								//engine把r扔给scheduler后，scheduler通过chan在扔给worker
+	}
+	
+	//然后engine这个gorouting就需要从out通道收数据; out是createWorker输出的结果
+	for {
+		result := <- out         //对out通道进行接收
+		for _, item := range result.Items {  
+			fmt.Printf("Got item: %v",item)
+		}
+		
+		for _, request := range result.Requests { //在把接收到的request送给scheduler
+			e.Scheduler.Submit(request)
+		}          //这就是一个engine的总体大框架
+	}
+}
+
+//实现createWorker，开一个gorouing,不断的从in通道收，然后通过woker函数处理后，发送给out通道
+func createWorker(in chan Request, out chan ParseResult) {
+
+	go func() {
+		for {
+			request := <- in 
+			result, err := worker(request)
+			if err != nil {
+				continue
+			}
+			out <- result
+		}
+	}()
+}
+
+
+3. Scheduler模块 创建调度器scheduler/simple.go  调度器的作用: 通过管道发送request{Url ParserFunc}给work
+
+package scheduler
+
+//SimpleScheduler去实现这两个方法Submit ConfigureMasterWorkerChan
+type SimpleScheduler struct {
+	workerChan chan engine.Request           //这里的workChan实际就是concurrent.go中的in 管道，要把in管道放到scheduler中
+}
+
+func (s *SimpleScheduler) Submit(r engine.Request) {
+	//发送request到worker chan
+	go func() {s.workerChan <- r}()   //开一个gorouing去执行submit, 为了避免循环等待，加了gorouting后循环等待就解开了
+}
+
+//因为ConfigMasterWorkerChan方法会改变struct的内容，所以要用指针类型
+func (s *SimpleScheduler) ConfigureMasterWorkerChan(c chan engine.Request) { //定义个ConfigMaster这个方法就是把in管道放到secheduler里
+	s.WorkerChan = c    //把engine里in chan赋給s.WorkerChan; 这样就是用的同一个chan了
+}
+
+
+4. main.go 调用engine
+
+func main() {
+	e := engine.ConcurrentEngine{
+		Scheduler: &scheduler.SimpleScheduler{},
+		WorkerCount:10,
+	}
+	
+	e.Run(engine.Request{
+		Url: "http://www.zhenai.com/zhenghun",
+		ParserFunc: parser.ParseCityList,
+	})
+}
+
+知识点:
+
+1. 结构体struct中可以有interface类型的数据；当实例化结构体时，给这个Interface传值时，必须是实现了interface方法的类型
+
+type test struct { //test这个结构体中有一个类型为TestInterface的值
+	t1 TestInterface
+}
+
+type TestInterface interface{  //定义TestInterface为interface
+	Get()
+}
+
+func(t test) Run() {
+	t.t1.Get()   //为test结构体定义Run方法。
+
+}
+
+type test2 struct{} //定义test2结构体，并实现Get方法
+func(test2) Get(){
+	fmt.Println("test2 get")
+}
+
+func main() {
+
+	t := test{   //实例化test
+		t1: test2{},
+	}
+	t.Run() //执行Run方法
+
+}
+
+两个struct结构体之间可以通过interface关联起来，如果要把struct1方法的中变量传给struct2，中间就通过interface
+
+---------------------------------------------------------------------
+
+
+限速的实现
+
+
+var rateLimiter = time.Tick(100 * time.Millisecond) //限速每秒10个request
+
+func Fetch(url string) ([]byte,error) {
+	<- rateLimiter
+}
+
+如果开了100个并发执行Fetch，那么这100个并发都会去抢<- rateLimiter，从而实现了限速
+
+---------------------------------------------------------------------------------------------
+
+并发版的爬虫架构
+
+1. engine发送request给scheduler, 是通过函数调用实现的
+2. scheduler收到request后，直接通过管道发送给worker
+3. 多个worker同时去同一个管道中抢任务执行，执行完成后把结果通过管道发送给engine
+4. engine通过管道收到后，打印Items并将返回的下一次要执行的url送给scheduler
+
+这节最重要的知识点就是，通过函数调用来完成engine发送request给scheduler
+
+------------------------------------------------------------------------------------
+
+总结:
+在实现并发版本爬虫前，先明确好它的架构以及各个模块之间的作用，最后在去实现它
+
+一、 engine模块:
+	1. 负责第一次初始化请求，将种子页面送给scheduler
+	2. engine后面接收的请求，都是通过worker管道发过来的
+	3. 在engine中初始化两个通道in和out，因为engine、scheduler、createWorker都是共用这两个channel
+	4. engine发送request给scheduler是通过函数调用的方式
+
+二、scheduler模块
+	1. 先接收从engine发过来的request
+	2. 负责将request发送给worker
+	3. scheduler模块中有一个channel，发送request到这个channel(这里有一个技术点:scheduler中的channel要和engine里面in管道是同一个,
+								如果不是同一个channel，worker是收不到request的；所以在scheduler中定义了ConfigureMasterWorkerChan方法，将engine中
+								定义的in通道，赋給scheduler中的workChan，最后在Submit通过这个workChan发送到worker)
+								
+三、worker模块
+	1. 它有两个形参，一个in,一个out通道；通过不断从in通道接收数据后，处理完成后，在通过out通道发送给engine
+	
+
+	现在的这种架构已经够快了，但是这个架构有一个缺点是控制力很小，为每个request创建的gorouting，分发出去后就收不回来了,不知道它们在外面怎么样;
+	所有的worker都在抢同一个channel里的东西，也没办法控制把request给哪个worker，如果想做一些负载均衡之类的事情就做不了，虽然性能现在也是可以的
+	
+		1.发送request				2.为每个Request创建gorouting，放到同一个channel里
+engine ----------------> Scheduler ---------------------------------------------------> 多个worker从同一个channel中抢任务 

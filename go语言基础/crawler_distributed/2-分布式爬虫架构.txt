@@ -1,0 +1,40 @@
+目前的问题:
+1. 限流   一台机器需要限流才能运行，如果有多台的话就可以提升效率
+2. 去重
+
+限流问题:
+1. 单节点能够承受的流量有限
+2. 将worker放到不同的节点
+
+
+worker节点分布在其他机器(worker主要功能是通过url获取网页内容)
+
+scheduler -------------> worker(不同节点上的多个worker)
+
+
+去重也可以单独拉出来做成一个服务，engine收到request后，去调用去重的服务; 这样做有一个坏处，engine每次都去问去重服务，这样流程可能会
+卡在这里。 有一个办法是让worker去调用去重服务，worker卡住没关系，可以多开几个gorouting(worker)
+
+
+架构:
+
+
+
+itemsave(节点)  <---------- engine(节点)  <----------------- worker(多个worker 节点)
+
+
+	                         scheduler --------------------->
+						 
+itemsaver是单独一个节点
+engine和scheduler在一个节点上
+worker可以分布在不同节点上
+
+实现的关键是从channel到分布式
+
+在并发版爬虫中，有很多的gorouting，这些gorouting之间是通过channel通信的
+
+通过RPC协议，实现分布式; 通过远程调用，让服务器去做其他事情
+
+RPC有 jsonrpc、 grpc、 thrift
+
+

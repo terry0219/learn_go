@@ -1,0 +1,155 @@
+之前我们实现了两种调度器，并发调度器和队列调度器;  代码通用性比较差，因为Scheduler的interface里面既包含并发调度的方法，
+又包含队列调度器的方法
+
+type Scheduler interface {               
+	WorkerReady(chan Request)                  
+	Submit(Request)
+	ConfigureMasterWorkerChan(chan Request)   //并发调度器用的方法
+	Run()							
+}
+
+并发调度器和队列调度器的主要区别是: 1. 并发调度器是所有worker共用一个chan  2. 队列调度器是每个worker单独一个in chan
+
+每个worker是公共一个chan，还是每个worker单独一个chan，这件事情只有Scheduler知道
+
+
+engine/concurrent.go
+
+type Scheduler interface {               
+	WorkerReady(chan Request)                  
+	Submit(Request)
+	WorkChan() chan Request       //定义WorkChan方法，返回chan类型；根据返回的类型，看是worker共用chan还是单独chan
+	Run()							
+}
+
+//in chan Request 就可以写到形参里了; 给worker什么样的chan(共用或者单独)，它就会取数据
+func createWorker(in chan Request, out chan ParseResult, s Scheduler) {
+
+	go func() {
+		for {
+			s.WorkerReady(in) //tell scheduler I am ready  把in chan通过interface传给scheduler
+			request := <- in                 //这里接收; 对应Scheduler中的case activeWorker <- activeRequest发送
+			result, err := worker(request)
+			if err != nil {
+				continue
+			}
+			out <- result
+		}
+	}()
+}
+
+
+func (e *ConcurrentEngine) Run(seeds ...Request) {
+	out := make(chan ParseResult) //定义chan,从worker输出的
+	e.Scheduler.Run() //先调用Scheduler.Run()方法，它会创建两个channel,然后开启一个gorouting，等待新任务的到来
+
+	for i := 0; i < e.WorkerCount; i++ { //然后去创建worker
+		createWorker(e.Scheduler.WorkChan(), out, e.Scheduler)  //e.Scheduler.WorkChan()表示worker向scheduler要chan; 看是共用chan还是单独chan
+	}
+
+	for _, r := range seeds {
+		e.Scheduler.Submit(r)  //将r发送给requestChan队列
+	}
+
+	for {
+		result := <-out
+		for _, item := range result.Items {
+			go func(i Item) {
+				e.ItemChan <- i
+			}(item)
+		}
+
+		for _, request := range result.Requests {
+			e.Scheduler.Submit(request)
+		}
+	}
+}
+
+
+接下里就要在并发调度器和队列调度器中实现WorkChan方法
+
+1. 队列调度器
+
+scheduler/queued.go
+
+type QueuedScheduler struct {
+	requestChan chan engine.Request
+	workerChan chan chan engine.Request
+}
+
+//定义workChan方法，为每个worker新生成一个chan
+func (s *QueuedScheduler) WorkChan() chan engine.Request {
+	return make(chan engine.Request)
+}
+
+2. 并发调度器
+
+scheduler/simple.go
+
+type SimpleScheduler struct {
+	workerChan chan engine.Request
+}
+
+//定义workChan方法，返回公共的chan; 所有worker都共用这个chan
+func (s *SimpleScheduler) WorkChan() chan engine.Request {
+	return s.WorkChan
+}
+
+func (s *SimpleScheduler) Run() {
+	s.workerChan = make(chan engine.Request)
+}
+
+
+这样实现后engine/concurrent.go里的Run方法，就对并发调度器和队列调度器都适用了。
+
+
+engine/concurrent.go
+
+使用者如果实现了这4个方法(WorkerReady Submit Run WorkChan), 那么就同时实现了这两个interface
+
+type Scheduler interface {     
+	ReadyNotifier             //接口组合          
+	WorkerReady(chan Request)                  
+	Submit(Request)      
+	Run()							
+}
+
+type ReadyNotifier interface {
+	WorkChan() chan Request   //把WorkChan单独移出来
+}
+
+
+func (e *ConcurrentEngine) createWorker(
+	in chan Request,
+	out chan ParseResult, ready ReadyNotifier) {  //使用ReadyNotifier接口
+	go func() {
+		for {
+			ready.WorkerReady(in)
+			request := <-in
+			result, err := e.RequestProcessor(
+				request)
+			if err != nil {
+				continue
+			}
+			out <- result
+		}
+	}()
+}
+
+
+程序入口
+main.go
+
+func main() {
+
+	e := engine.ConcurrentEngine{
+		Scheduler:        &scheduler.QueuedScheduler{},
+		//Scheduler:        &scheduler.SimpleScheduler{}, //通过指定不同的scheduler，调用不同的方法
+		WorkerCount:      100,
+	}
+
+	e.Run(engine.Request{
+		Url: "http://www.starter.url.here",
+		ParserFunc: parser.ParseCityList,
+	})
+}

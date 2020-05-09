@@ -1,0 +1,205 @@
+前面做了itemsaver的服务，把它做成了rpc server；接下来把worker也提取出来，做成一个rpc的服务出来
+
+worker现在做的事情是接收Request{Url PaserFunc}，然后返回ParseResult； paserfunc参数是一个函数
+
+其中url是string类型，可以在网络上传输，但是ParserFunc是一个函数类型，是不能在网络上传输的
+
+只有string,int类型可以在网络上传输，所以需要将ParserFunc序列化为json字符串才能传输
+
+如果要把worker做成rpc服务，就要实现解析器的序列化和反序列化; 也就是把解析器转换为能在网络上传输的json报文
+
+
+worker和engine之间的反复通信
+
+1. worker中的Parser解析器是一个函数，在分布式的环境中，Parser解析器不能直接传给engine，只能传输字符串，整数等类型
+	所以把Parser解析器要过一个中间的节点Serialized Parser(结构体)，通过序列化转换为json字符串
+	
+
+2. engine收到json字符串后，在通过Serialized Parser反序列化，变成一个可以真正工作的Parser
+
+3. engine收到新任务后发给worker，也是要通过先序列化为json字符串后，在传给worker; worker收到后在进行反序列化，变成一个可以真正工作的Parser。
+
+在处理worker成为rpc服务之前，必须先要解析这个序列化和反序列化的问题
+
+
+一、
+crawler_distributed/worker/types.go
+
+package worker
+type SerializedParser struct {   //函数序列化后放到这里
+	Name    string  //函数名称
+	Args	interface{}   //因为ProfilePare还有一个userName的参数，所以定义了args
+}
+// 比如{"ParseCityList", nil} {"ProfileParser", "安静的雪"} 第一个是函数的名字，第二个是这个函数的参数
+有这个结构体后，就可以反序列化出一个Parser解析器，这个Parser可以收contents []byte, url string参数，返回ParerResult
+
+
+二、 crawler/engine/types.go
+
+把ParserFunc改为一个接口
+
+原来是一个函数，ParserFunc接收两个参数，返回ParserResult
+type ParserFunc func(contents []byte, url string) ParseResult
+
+type ParseResult struct {
+	Requests []Request
+	Items	 []interface{}
+}
+
+改为接口, 含有两个方法Parse和Serialize; 当有多个地方调用同个方法的时候，就可以将这些方法抽象为interface;
+比如像这个例子，有ParseCity(城市解析器)、ParseCityList(城市列表解析器)、ProfileParse(用户解析器), 都是接收一个[]byte参数，解析后
+返回ParseResult，所以可以把Parse(contents []byte)方法抽象出来
+
+type Parser interface {
+	Parse(contents []byte, url string) ParseResult   //函数
+	Serialize() (name string, args interface{}) //序列化后，把这两个数据name args填充到上面定义的SerializedParser结构体
+}
+
+
+type Request struct {
+	Url 		string
+	Parser      Parser      //把Request里的Parser改为Parser接口类型
+}
+
+//定义空的parser，并且实现Parser接口
+type NilParser struct{}
+
+func (NilParser) Parse(_ []byte, _ string) ParseResult {
+	return ParseResult{}
+}
+
+func (NilParser) Serialize() (name string, args interface{}) {
+	return "NilParser",nil
+}
+
+其他解析器也可以改造成类似NilParser的类型，但是改动量较大，所以采用包装的方式; 定义一个FuncParser结构体，肚子里放一个Parser函数类型
+把ParseCity等解析器包装成Parser interface类型后，就可以赋給Request里的Parser了
+
+接下来开始改各自的parser
+
+定义这个结构体，主要用来包装parser解析器
+type FuncParser struct{
+	Parser  ParserFunc     //函数
+	name    string 		   //函数的名字; 希望外面的人给我这个参数
+}
+
+使用工厂函数来初始化这个结构体
+func NewFuncParser(p ParserFunc, name string) *FuncParser{ //NewFuncParser(ParseCity, "ParseCity")
+	return &FuncParser{
+		Parser: p,
+		name: name,
+	}
+}
+
+接下来也对FuncParser结构体去实现Parser接口
+
+func (f *FuncParser) Parse(contents []byte, url string) ParseResult {
+	return f.Parser(contents, url) //f.Parser是ParserFunc类型，有两个参数，返回ParseResult
+}
+
+func (f *FuncParser) Serialize() (name string, args interface{}){
+	return f.name,nil
+}
+
+这样就把ParserFunc包装好了，接下来看如何用它
+
+
+三、
+zhenai/parser/citylist.go
+
+原来的写法:
+
+for _, m := range matches {
+	result.Requests = append(result.Requests, engine.Request{
+								Url: string(m[1]),
+								ParserFunc: ParseCity, //这用的是一个函数
+						})
+}
+
+修改后:
+for _, m := range matches {
+	result.Requests = append(result.Requests, engine.Request{
+								Url: string(m[1]),
+								Parser: engine.NewFuncParser(ParseCity, "ParseCity"), //用上面定义的工厂函数，初始化结构体
+												//用NewFuncParser包装一下就成了Parser interface类型了
+						})
+}
+
+zhenai/parser/city.go
+
+Parser: engine.NewFuncParser(ParseCity, "ParseCity")  //同理包装下ParseCity; 调用函数通过Parser.Parse(contents)
+
+
+接下来ProfileParser比较麻烦，它有一个参数username，所以需要自己定义一个ProfileParser接口
+
+原来的写法：
+
+zhenai/parser/city.go
+
+for _, m := range matches {
+	result.Requests = append(result.Requests, engine.Request{
+							Url: string(m[1]),
+							ParserFunc: ProfileParser(string(m[2])) //是一个函数类型
+						})
+
+}
+
+zhenai/parser/profile.go
+
+type ProfileParser struct {
+	userName string
+}
+
+//定义工厂函数，初始化ProfileParser结构体
+func NewProfileParser(name string) *ProfileParser {
+	return &ProfileParser{
+		userName: name，
+	}
+}
+
+在去实现Parser接口的两个方法Parse和Serialize()
+func (p *ProfileParser) Parse(contents []byte, url string) engine.ParseResult {
+	return parseProfile(contents, url, p.userName) //parseProfile是之前实现过的解析用户的解析器，在加一个p.userName参数
+}
+
+func (p *ProfileParser) Serialize() (name string, args interface{}) {
+	return "ProfileParser", p.userName  //返回函数的名称，在加一个函数的参数p.userName
+}
+
+然后修改一下
+Parser: NewProfileParser(string[m2])
+
+
+以上改了这么多地方，实际上就做了一件事情，就是把肚子里第二个参数由原来的函数类型改为接口类型;
+定义一个结构体，肚子里放一个函数类型的参数;实现了接口中的方法后就可以赋給该接口了
+type Request struct {
+	Url	 		string
+	ParserFunc  ParserFunc
+}
+
+改为接口， 这个接口有两个实现
+type Parser interface {
+	Parse(contents []byte, url string) ParseResult
+	Serialize() (name string, args interface{})
+}
+
+type Request struct {
+	Url	 		string
+	Parser  	Parser
+}
+
+Parser: engine.NewFuncParser(ParseCity, "ParseCity")  //"ParseCity"字符串(序列化)是在网络上传输的; 收到的人看到"ParseCity"后，就会去找对应的函数(反序列化)
+
+最后在改下调用crawler/main.go
+
+e := engine.ConcurrentEngine{
+	Scheduler: &scheduler.QueuedScheduler{},
+	WorkerCount: 100,
+	ItemChan: itemChan,
+}
+
+e.Run(engine.Request{
+	Url: "http://www.zhenai.com/zhenghun",
+	Parser: engine.NewFuncParser(parser.ParseCityList, "ParseCityList") //这里要改;
+	//engine.NewFuncParser返回的是一个结构体，它实现了Parser接口，所以可以赋值给它
+})

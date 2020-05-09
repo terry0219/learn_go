@@ -1,0 +1,39 @@
+在单任务版爬虫架构中，fetcher模块是耗时时间最长的模块，这个模块主要获取网页内容
+
+
+fetcher和paser两个模块可以合成一个大的模块， fetcher的输出就是parer的输入，这两个模块可以合并成一个worker模块
+
+
+并发版本的爬虫
+               requests,items
+engine   <--------------------------------------- worker... (一口气可以开多个worker)
+ 
+             request								request
+            ---------> 	scheduler(任务分配)   ------------->
+									  										
+执行流程:
+engine发送request给scheduler， scheduler在将request发送给worker,worker处理完成在将下一次要处理的request给engine，一直到没有新任务为止。
+
+engine、scheduler各是一个gorouting; 有多个worker就有多个gorouting
+engine发送request到调度器scheduler， scheduler在将request发送给worker
+									
+1. woker输入是request , 输出是requests,items
+2. scheduler负责送request给多个worker
+3. worker处理完成后，返回request,items给engine
+4. engine打印items，并将request继续送给scheduler
+
+
+在并发版本中，这些箭头都是channel， engine是一个gorouting; scheduler是一个gorouting;worker有多个gorouting
+
+这些gorouting都是channel连接起来
+
+
+scheduler实现1： 所有worker共用一个输入；就是共用一个channel，所有worker都去这个channel中去抢任务(下一个request)
+
+流程:
+                          request
+request ---> scheduler ------------->  多个worker
+
+
+
+

@@ -1,0 +1,115 @@
+包装一个函数的步骤:
+1. 先看被包装的函数返回的类型；包装的函数要和它返回的类型要有一样的类型，可以不全取
+2. 被包装的函数要在包装函数里调用执行
+3. 包装函数中的形参传到函数内部，给被包装的函数执行，然后返回
+
+包装函数的用途：对这块的代码单独拎出来，可以复用
+
+例子：
+
+包装之前的函数
+charset.DetermineEncoding(content []byte, contentType string) (e encoding.Encoding, name string, cerain bool) {}
+
+包装之后的函数
+func determineEncoding(r io.Reader) encoding.Encoding {
+	bytes, err := bufio.NewReader(r).Peek(1024) //读1024Byte
+	if err != nil {
+		panic(err)
+	}
+	e,_,_ := charset.DetermineEncoding(bytes,"")
+	return e
+}
+
+----------------------------------------------------------------------------------------------
+
+正则表达式
+
+1. 先把要匹配的内容复制到正则表达式中，
+regexp.MustCompile(`<a href="http://www.zhenai.com/zhenghun/yuxi" class="" >玉溪</a>`)
+
+2. 在针对要获取的地址和城市名称进行写规则
+regexp.MustCompile(`<a href="http://www.zhenai.com/zhenghun/[0-9a-z]+"[^>]*>玉溪</a>`)       [^>]*  匹配0个或多个字符，除了>
+
+3.  在对要匹配的内容加上括号, 后面取值可以通过m[1] m[2]... 来获取匹配到的值
+re := regexp.MustCompile(`<a href="(http://www.zhenai.com/zhenghun/[0-9a-z]+)"[^>]*>([^<]+)</a>`)
+matches := re.FindAllSubmatch(contents,-1)
+
+contents是传进来的页面数据
+
+------------------------------------------------------------------------------------------------
+
+单机版的爬虫架构
+
+三个解析器:
+城市列表解析器:  获取每个城市的名称以及对应的城市url
+城市解析器:      根据上一步获取的城市url, 在去获取每个城市下的用户名称以及用户的URL
+用户解析器:      根据上一步获取的用户url, 在去获取每个用户的详细信息
+
+每个解析器返回的数据包含下一个页面需要的url和解析器
+
+
+解析器 Parser
+	输入: utf-8编码的文本
+	输出: Request{URL, 对应Parser}, Item列表
+
+爬虫算法:
+1. 先获取城市列表信息， 返回城市名称和城市URL
+2. 在请求每个城市的URL，返回用户名称和用户URL
+3. 最后请求每个用户的URL， 返回用户详情
+
+	
+要执行第2步，首先需要第一步获取的数据; 要执行第3步，需要第2步获取的数据。
+所以需要一个队列(slice), 第1步获取到的数据放到队列中; 第2步从队列中取数据，获取Url和解析器，执行完成后，在放入队列；
+第3步从队列中取数据，获取url和解析器，执行完成后，打印用户详情
+
+需要的组件
+1. 三个解析器: 城市列表解析器、城市解析器、用户解析器
+2. Fetcher公共组件: 根据传的url，将获取到的页面内容，转为utf-8的编码。 最后传给每个解析器
+3. Engine组件: (1)接收种子页面(这里城市列表页面就是种子页面)，把任务添加到队列里，维护起来；engine就会不断从队列中取任务去做； 
+			   (2)取到任务后，先送给Fetcher组件，将页面内容转换为utf-8后，最后送给解析器执行
+
+Parser解析器最后返回两个列表，一个是下一步要请求的url和对应的解析器，另外一个是当前获取到的信息; 返回的Requests就是下一步要做的，加到任务队列里; 这样就可以源源不断的从任务队列中取新的任务来执行
+
+
+type Request struct { 
+	Url   string
+	ParserFunc  func([]byte) ParserResult
+}
+
+type ParserResult struct {
+	Requests []Request
+	Items    []inteface{}
+}
+
+
+1. 先实现Fetcher组件
+func Fetch(url string) ([]byte, error) {}
+
+2. 在去实现城市列表解析器citylist.go
+func ParseCityList(contents []byte) engine.ParseResult {}
+将获取到的城市url放入ParseResult.Requests，因为城市解析器还未实现，先定义一个空的解析器
+
+	
+3. 在实现Engine组件，该组件维护一个队列requests，各个解析器返回的ParserResult.Requests就添加到这个队列里
+	遍历requests，获取url, 传给fetcher组件
+	func Run(seeds ...Request) {}
+	调用engine.Run方法时，传入url种子页面和解析器
+	
+4. 在main.go中调用engine.Run
+func main() {
+	engine.Run(engine.Request{
+		Url: "http://www.zhenai.com/zhenghun",  种子页面
+		ParserFunc: parser.ParseCityList,
+	})
+}
+
+城市列表解析器citylist.go中，获取到城市url后，在把城市解析器ParseCity写到列表中。
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,43 @@
+使用bing国际版搜索: docker pull docker.elastic.co/elasticsearch/elasticsearch:7.6.1
+
+启动一个单节点的elasticsearch
+docker run -p 9200:9200 -p 9300:9300 -e "discovery.type=single-node" docker.elastic.co/elasticsearch/elasticsearch:7.6.1
+
+
+然后访问http://xxxx:9200就可以了
+
+
+Goland里有一个工具是rest client，可以模拟发送http请求; Get获取数据; PUT增加数据; POST增加或者修改数据
+
+
+http://xxxxx:9200/index/type/id    
+
+index相当于database; type相当于table; 不需要预先创建index和type; type中的数据类型可以不一致
+
+
+
+如果是GET请求，header要记得设置Content-Type: application/json
+
+
+添加数据
+PUT  http://xxxxx:9200/imooc/course/1  text: {"name": "golang", "instructor": "ccmouse"}
+
+查看数据
+GET  http://xxxxx:9200/imooc/course/1
+
+添加数据
+POST http://xxxxx:9200/imooc/course/2  text: {"name": "golang2", "instructor": "ccmouse2"}
+
+使用POST添加数据也可以写id
+POST http://xxxxx:9200/imooc/course    text: {"name": "golang3", "instructor": "ccmouse3"}
+
+查看所有数据
+GET  http://xxxxx:9200/imooc/course/_search
+
+查看含有golang的数据
+GET  http://xxxxx:9200/imooc/course/_search?q=golang
+
+
+PUT/POST 创建/修改数据，使用POST可省略id
+
+GET <index>/<type>/_search?q= 来全文搜索

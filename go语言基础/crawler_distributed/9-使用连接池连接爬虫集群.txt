@@ -1,0 +1,143 @@
+分布式架构:
+
+ItemSaver 服务器: 负责存储
+Worker(多个) 服务器:  engine会去调用worker，来为自己做事情
+Engine  Scheduler  客户端； 这是一个总控的地方，它要连接很多的服务器，让这些服务器为它做事情
+
+
+itemsaver(rpc服务器) ------------- engine(rpc客户端)   -------- worker(rpc服务器)
+										|
+								   scheduler
+								   
+								   
+
+现在项目只能连一个worker的服务
+
+crawler_distributed/worker/client/worker.go 这里面的CreateProcessor函数创建了一个client
+
+client, err := rpcsupport.NewClient(fmt.Sprintf(":%d",config.WorkerPort0))
+
+然后这100个worker全都扔给了这一个人
+crawler_distributed/main.go
+
+func main() {
+	processor, err := client2.CreateProcessor()
+	e := engine.ConcurrentEngine{
+			Scheduler: &Scheduler.QueueScheduler{},
+			WorkerCount: 100,
+			ItemChan: itemChan,
+			RequestProcessor: processor,  //调用的地方
+		}
+}
+
+
+
+修改一下crawler_distributed/worker/client/worker.go， 让client从外面传进来
+
+func CreateProcessor(clientChan chan *rpc.Client) (engine.Processor, nil) ( 
+	
+	return func(req engine.Request, engine.ParseResult, error) {
+		//先将request序列化为结构体类型才能call rpc
+		sReq := worker.SerializeRequest(req)
+		var sResult worker.ParseResult //sResult变量是worker rpc服务端返回的
+		//调用rpc
+		c := <-clientChan      //通过chan接收client;  worker每次做事情都从这个chan源源不断的获取client做事情
+		err := c.Call(config.CrawlServiceRpc, sReq, &sResult)
+		
+		if err != nil {
+			return engine.ParseResult{}, nil
+		}
+		return worker.DeserializeResult(sResult),nil //调用成功后，把sResult反序列化为可以真正可以工作的函数
+	}, nil
+)
+
+
+修改crawler_distributed/main.go
+
+createClientPool函数对host一个个去连，然后这些连接的client对象放到slice里，组成一个Pool; 然后通过chan发送给worker
+
+func createClientPool(hosts []string) chan *rpc.Client{
+	var clients []*rpc.Client
+	for _,h := range hosts {
+		client, err := rpcsupport.NewClient(h)
+		if err == nil {
+			clients = append(clients, client) //如果没有出错，把client放到slice中
+			log.Printf("Connected to %s",h)
+		} else {
+			log.Printf("error connecting to %s: %v", h, err)
+		}
+	}
+	
+	//clients创建好后，就可以往chan分发了; 分发是在一个gorouting里
+	out := make(chan *rpc.Client)
+	go func() {
+		for {        //启一个for{}循环，一直分发client到chan； 这样clientPool就做好了
+			for _, client := range clients { //clients是私有的，它通过chan消息传递的方法传递给了worker
+				out <- client       
+			}
+		}
+	}()
+
+	return out
+}
+
+
+crawler_distributed/main.go
+
+func main() {
+	
+	pool := createClientPool() //createClientPool返回一个chan类型的*rpc.Client
+	processor := worker.CreateProcessor(pool) //在把这个chan送給worker里的CreateProcessor, 就实现了engine和worker之间的消息传递
+	
+	e := engine.ConcurrentEngine{
+			Scheduler: &Scheduler.QueueScheduler{},
+			WorkerCount: 100,
+			ItemChan: itemChan,
+			RequestProcessor: processor,  //调用的地方
+		}
+}
+
+
+-----------------------------------------------
+
+如果要起很多个worker的话，比如开启9000 9001 9002端口，这样的话启动worker加一个命令行参数
+
+crawler_distributed/worker/server/worker.go
+
+var port = flag.Int("port", 0, "the port for me to listen on") //port是参数名称，0是默认值，第三个参数是帮助信息
+
+func main() {
+	flag.Parse()
+	if *port == 0 {
+		fmt.Println("must specify a port")
+		return
+	}
+	log.Fatal(rpcsupport.ServeRpc(fmt.Sprintf(":%d", *port),worker.CrawlService{})) //*port就是外面传进来的值
+}
+
+
+go run worker.go --help
+启动:
+go run worker.go --port=9000
+
+同理itemsave也是这样
+
+engine就不一样，它需要配置itemsave\多个worker的地址和端口
+crawler_distributed/main.go
+
+var (
+	itemSaverHost = flag.String("itemsaver_host", "", "itemsaver host")
+	workerHosts = flag.String("worker_hosts", "", "worker hosts") //用逗号来分割不同port, 比如":9000,:9001"
+	
+)
+
+func main() {
+	flag.Parse()
+	itemChan, err := itemsaver.ItemSaver(*itemSaverHost)
+	
+	pool := createClientPool(string.Split(*worker_hosts, ",")) //使用string.Split指定逗号来分割，变为一个slice
+}
+
+启动:
+
+go run main.go --itemsaver_host=":1234" --worker_hosts=":9000,:9001"

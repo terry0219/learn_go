@@ -1,0 +1,174 @@
+接下来把worker函数包装成rpc服务
+
+func Worker(r Request) (ParseResult, error) {
+	body, err := fetcher, Fetch(r.Url)
+	if err != nil {
+		return ParseResult{}, nil
+	}
+	
+	return r.Parser.Parser(body, r.Url), nil
+}
+
+Worker函数接收一个request,返回ParseResult;  rpc函数也是一个输入，一个输出，一个错误信息
+
+
+crawler_distributed/worker/types.go
+
+package worker
+
+type SerializedParser struct {
+	Name string            //函数名称
+	Args interface{}       //函数的参数
+}
+
+
+开始定义worker的rpc服务
+
+type CrawlService struct {}
+
+//rpc服务，一个输入，一个输出，一个error
+func (CrawlService) Process(req engine.Request, result *engine.ParseResult) error{}
+
+但是这样定义是不对的，因为engine.Request在网络上是没办法传输的，因为engine.Request里面有一个Parser是interface类型
+
+所以需要定义在定义一个Request，要可以在网络上传输的; ParseResult也是一样
+
+type Request struct {
+	Url string
+	Parse SerializedParser //SerializedParser是一个结构体，里面有{Name Args}
+}
+
+type ParseResult struct {
+	Items	[]engine.Item
+	Requests []Request
+}
+上面定义的Request和ParseResult才可以在网络上传输
+
+
+
+接下来要实现Request和engine.Request的互相转换; ParseResult和enine.ParseResult互相转换。
+转换了以后才可以在网络上和应用逻辑上使用
+
+把engine.Request转换为Request
+func SerializeRequest(r engine.Request) Request {
+	name, args := r.Parser.Serialize()
+	return Request{
+			Url: r.Url,
+			Parser: SerializedParser{
+				Name: name,
+				Args: args,
+			},
+	}
+}
+
+把engine.ParseResult转换为ParseResult
+func SerializeResult(r engine.ParseResult) ParseResult {
+	result := ParseResult{
+		Items: r.Items,   //Items不需要转换，可以直接在网络上传输
+	}
+
+	for _, req := range r.Requests {
+		result.Requests = append(result.Requests, SerializeRequest(req))
+	}
+	return result
+}
+
+上面的操作是序列化，把函数序列化为普通字符，可以在网络上进行传输
+
+接下来实现反序列化，把request转换为可以真正工作的函数
+func DeserializeRequest(r Request) (engine.Request, error) {
+	parser, err := deserializeParser(r.Parser)
+	if err != nil {
+		return engine.Request{}, nil
+	}
+	
+	return engine.Request{
+		Url: r.Url,
+		Parser: parser        //r.Parser是一个结构体，要转换成可以真正干活的Parser
+	}, nil
+}
+
+func DeserializeResult(r ParseResult) engine.ParseResult {
+
+	result := engine.ParseResult{
+		Items: r.Items,      // 同样items不需要转换，可以直接赋值
+	}
+	
+	for _, req := range r.Request {
+		engineReq, err := DeserializeRequest(req)
+		if err != nil {
+			log.Printf("error deserializing request: %v", err)
+			continue
+		}
+		
+		result.Requests = append(result.Requests, engineReq)
+	}
+	
+	return result
+}
+
+定义配置文件
+crawler_distributed/config/config.go
+package config
+
+const (
+	ParseCity = "ParseCity"
+	ParseCityList = "ParseCityList"
+	ParseProfile = "ParseProfile"
+	NilParser = "NilParser"
+)
+
+上面把转换的框架写好了，这里具体要把字符串转换为真正的函数,
+func deserializeParser(p SerializedParser) (engine.Parser, error) {
+	switch p.Name {
+	case config.ParseCityList:
+		return engine.NewFuncParser(
+			parser.ParseCityList, config.ParseCityList), nil
+	case config.ParseCity:
+		return engine.NewFuncParser(
+			parser.ParseCity, config.ParseCity), nil
+	case config.NilParser:
+		return engine.NilParser{},nil
+	case config.ParseProfile:
+		if userName, ok := p.Args.(string); ok {
+			return parser.NewProfileParser(
+			p.Args.(string)), nil //p.Args转换为string	
+		} else {
+			return nil, fmt.Errorf("invalid " + "arg: %v", p.Args)
+		}
+
+	}
+	default:
+		return nil, errors.New("unkown parser name")
+}
+
+以上的这些函数就是帮助可以转换结构体为函数，函数转换为结构体
+
+接下来就要实现worker的rpc服务了
+
+crawler_distributed/worker/rpc.go
+
+package worker
+
+type CrawlService struct {}
+
+//这里定义的request和parserResult是字符串类型的结构体，并不是函数类型
+func (CrawlService) Process(req Request, result *ParseResult) error{
+	engineReq, err := DeserializeRequest(req) //反序列化request，变为真正可以工作的函数
+	if err != nil {
+		return nil
+	}
+	
+	engineResult, err := engine.Worker(engineReq)   //调用worker
+	*result = SerializeResult(engineResult) //序列化result，把函数类型的转换为字符串类型
+	return nil
+}
+
+
+接下来就要把CrawlService注册到rpc上
+
+crawler_distributed/worker/server/main.go
+
+func main() {
+	log.Fatal(rpcsupport.ServeRpc(fmt.Sprintf(":%d", config.WorkerPort0), worker.CrawlService{})) //启动worker的rpc服务
+}

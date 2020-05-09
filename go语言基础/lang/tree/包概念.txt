@@ -1,0 +1,109 @@
+每个目录是一个包(包名和目录名不一定要一样); 每个目录只能有一个包
+
+main包包含可执行入口
+
+为结构体定义的方法必须放在同一个包内(可以是不同的文件，也就是结构体的定义方法可以写在不同文件中)
+
+
+import "imooc.com/ccmouse/learngo/lang/tree"  //引入包，实际是目录
+var root tree.TreeNode  //tree.TreeNode  这里面tree意思是上面引入目录后，在这个目录下的package tree包
+
+
+"imooc.com/ccmouse/learngo/lang/tree" 这个是目录，在tree这个目录下只能有一个包，比如在当前目录下node.go文件定义了package tree后，如果还要定义main包的话，
+就要在创建一个子目录tree/entry， 在这个子目录下定义entry.go中定义main包
+
+
+自定义的包如果要给别人用，变量名称的首字母要大写
+
+一个结构体定义的方法可以在不同的文件里，只要在同一个包内即可
+
+-----------------------------------------------------------------------------------
+
+Go语言的包借助了目录树的组织形式，一般包的名称就是其源文件所在目录的名称，虽然Go语言没有强制要求包名必须和其所在的目录名同名，但还是建议包名和所在目录同名，这样结构更清晰。
+
+包可以定义在很深的目录中，包名的定义是不包括目录路径的，但是包在引用时一般使用全路径引用。比如在GOPATH/src/a/b/ 下定义一个包 c。在包 c 的源码中只需声明为package c，而不是声明为package a/b/c，但是在导入 c 包时，需要带上路径，例如import "a/b/c"。
+
+包的习惯用法：
+	包名一般是小写的，使用一个简短且有意义的名称。
+	包名一般要和所在的目录同名，也可以不同，包名中不能包含- 等特殊符号。
+	包一般使用域名作为目录名称，这样能保证包名的唯一性，比如 GitHub 项目的包一般会放到GOPATH/src/github.com/userName/projectName 目录下。
+	包名为 main 的包为应用程序的入口包，编译不包含 main 包的源码文件时不会得到可执行文件。
+	一个文件夹下的所有源码文件只能属于同一个包，同样属于同一个包的源码文件不能放在多个文件夹下。
+
+	
+全路径导入
+	包的绝对路径就是GOROOT/src/或GOPATH/src/后面包的存放路径，如下所示：
+	import "lab/test"
+	import "database/sql/driver"
+	import "database/sql"
+
+	上面代码的含义如下：
+	test 包是自定义的包，其源码位于GOPATH/src/lab/test 目录下；
+	driver 包的源码位于GOROOT/src/database/sql/driver 目录下；
+	sql 包的源码位于GOROOT/src/database/sql 目录下。
+	
+	
+包的引用有四种格式
+	1、标准引用格式，此时可以用fmt.作为前缀来使用 fmt 包中的方法，这是常用的一种方式
+	示例代码如下：
+		package main
+		import "fmt"
+		
+		func main() {
+			fmt.Println("C语言中文网")
+		}
+		
+	2、 自定义别名引用格式
+		在导入包的时候，我们还可以为导入的包设置别名，如下所示：
+		import F "fmt"
+
+		其中 F 就是 fmt 包的别名，使用时我们可以使用F.来代替标准引用格式的fmt.来作为前缀使用 fmt 包中的方法。
+
+		示例代码如下：
+		package main
+		import F "fmt"
+		
+		func main() {
+			F.Println("C语言中文网")
+		}
+		
+	3、省略引用格式
+		import . "fmt"
+
+		这种格式相当于把 fmt 包直接合并到当前程序中，在使用 fmt 包内的方法是可以不用加前缀fmt.，直接引用。
+
+		示例代码如下：
+		
+		package main
+		import . "fmt"
+		
+		func main() {
+			//不需要加前缀 fmt.
+			Println("C语言中文网")
+		}
+		
+	4、匿名引用格式
+	
+		在引用某个包时，如果只是希望执行包初始化的 init 函数，而不使用包内部的数据时，可以使用匿名引用格式，如下所示：
+		import _ "fmt"
+
+		匿名导入的包与其他方式导入的包一样都会被编译到可执行文件中。
+
+		使用标准格式引用包，但是代码中却没有使用包，编译器会报错。如果包中有 init 初始化函数，则通过import _ "包的路径" 这种方式引用包，仅执行包的初始化函数，即使包没有 init 初始化函数，也不会引发编译器报错。
+
+		示例代码如下：
+		
+		package main
+		import (
+			_ "database/sql"
+			"fmt"
+		)
+		func main() {
+			fmt.Println("C语言中文网")
+		}
+		
+		
+如何扩充系统类型或者别人的类型
+1. 定义别名
+2. 使用组合
+

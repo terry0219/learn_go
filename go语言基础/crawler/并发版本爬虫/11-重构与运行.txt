@@ -1,0 +1,68 @@
+当逻辑跑通后，后面就要看看代码是否有需要优化的地方
+
+1. save函数，每调用一次save函数，就会New一个elasticsearch的客户端，这是特别的浪费; 只需要一个client就可以了
+
+所以在itemsaver函数中生成一个client就可以了
+
+
+func ItemSaver() (chan engine.Item, error) {
+	client, err := elastic.NewClient(elastic.SetSniff(false)) //在itemsaver中生成client
+	
+	if err != nil {
+		return nil ,err
+	}
+	
+	go func() {
+		err := save(client,item) //然后在传给save函数
+	}()
+	
+}
+
+
+func save(client *elastic.Client, item engine.Item) err { //然后在save函数中定义个形参client，类型要和elastic.NewClient返回的类型一样
+	
+}
+
+
+main.go
+
+func main() {
+	itemChan, err := persist.ItemSaver() //去接这两个返回值
+	if err != nil {
+		panic(err)
+	}
+	
+	e := engine.ConcurrentEngine{
+		ItemChan: itemChan
+	}
+	
+	
+}
+
+
+2. 第二个优化的地方
+
+for _, m := range matches {
+	url := string(m[1])
+	name := string(m[2])
+	result.Requests = append(result.Requests, engine.Request{
+						Url: string(m[1]),
+						ParserFunc: func(c []byte) engine.ParseResult {
+								return ParseProfile(c, url, name)
+						}
+	})
+}
+
+这段代码把它提出来，定义一个函数来做
+
+
+定义一个函数
+func ProfileParser(name string, url string) engine.ParserFunc {
+	return func(c []byte) engine.ParseResult {
+		return ParseProfile(c,url,name)
+	}
+}
+
+
+ParserFunc: ProfileParser(name, url) 这里就可以改成这样了
+

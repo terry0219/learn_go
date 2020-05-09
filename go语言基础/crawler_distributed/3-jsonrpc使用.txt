@@ -1,0 +1,97 @@
+做一个demo，把jsonrpc跑通
+
+
+使用rpc之前呢，要定义一些数据结构，这些数据结构来支持rpc; 
+rpc/rpc.go
+
+定义rpc的步骤:
+1. 先定义好数据结构以及方法
+2. 把上面定义好的数据结构注册到rpc上
+3. 启动server端，rpc监听的端口以及设置接收请求
+4. 定义client端，请求rpc server, 调用注册到rpc上的方法
+
+
+1. 先定义好rpc的数据结构以及方法
+package rpcdemo
+
+type DemoService struct {}
+
+type Args struct {
+	A, B int
+}
+
+func (DemoService) Div(args Args, result *float64) error {           //rpc对参数有要求，必须是两个;这是go语言rpc框架的要求
+		if args.B == 0 {											//result的类型一定得是指针类型，因为要把值写进去
+			return errors.New("division by zero")
+		}										
+		*result = float64(args.A)/float64(args.B)
+		return nil
+
+}
+
+上面就定义了一个rpc的函数， 接下来建rpc把这个函数包装一下
+
+2. 定义rpc server端
+rpc/server/main.go
+
+package main
+
+import (
+	"net/rpc"
+	"net/rpc/jsonrpc"
+)
+
+func main() {
+	//注册rpc函数
+	rpc.Register(rpcdemo.DemoService{})
+	
+	//监听1234端口
+	listener, err := net.Listen("tcp",":1234")
+	if err ！= nil {
+		panic(err)
+	}
+	
+	//接收传入的连接
+	for {
+		conn, err := listener.Accept()
+		if err != nil {   //如果有报错，打印日志继续接收连接
+			log.Printf("accept error: %v", err)
+			continue
+		}
+		go jsonrpc.ServeConn(conn) //如果不用gorouting的话，这个正在操作的时候就没法接收下一个连接了
+		
+	}
+}
+
+这就是一个简单的rpc服务器， 启动
+
+手动发请求，使用telnet localhost 1234， 然后输入
+{"method":"DemoService.Div", "params":[{"A":3,"B":"4"}], "id":1}
+
+rpc服务端返回:
+{"id":1, "result":0.75, "error": null}
+
+
+3. 定义rpc client端，接下来通过程序来发请求
+
+rpc/client/main.go
+
+package main
+
+import "net"
+
+func main() {
+	conn, err := net.Dial("tcp",":1234")
+	if err != nil {
+		panic(err)
+	}
+	client := jsonrpc.NewClient(conn)
+	
+	var result float64
+	err = client.Call("DemoService.Div", rpcdemo.Args{10,3}, &result)
+	
+	fmt.Println(result,err) //3.33333333333333 <nil>
+}
+
+
+

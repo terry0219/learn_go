@@ -1,0 +1,87 @@
+上一节已经把Itemsaver的server端启动起来了; client端就放在engine里
+
+engine还是通过chan把item发送给itemsaver; itemsave(rpc client)开一个gorouting, 通过chan接收数据后，通过调用itemsaver的rpc服务来将数据写入es中
+
+
+一、crawler_distributed/persist/client/itemsave.go
+
+package client 
+
+func ItemSaver(
+	host string) (chan engine.Item, error) {   //返回一个chan
+	client, err := rpcsupport.NewClient(host) //之前封装的client端，调用一下
+	if err != nil {
+		return nil, err
+	}
+
+	out := make(chan engine.Item)
+	go func() {
+		itemCount := 0
+		for {
+			item := <-out
+			log.Printf("Item Saver: got item "+
+				"#%d: %v", itemCount, item)
+			itemCount++
+
+			// Call RPC to save item
+			result := ""       
+			err := client.Call(   // client通过chan收到数据后，调用Call来调用Rpc
+				config.ItemSaverRpc,
+				item, &result)
+
+			//err := client.Call("ItemSaverService.Save", item, &result) 调用rpc
+			if err != nil {
+				log.Printf("Item Saver: error "+
+					"saving item %v: %v",
+					item, err)
+			}
+		}
+	}()
+
+	return out, nil
+}
+ 
+二、crawler_distributed/main.go
+
+修改main.go
+
+func main() {
+	//原来这里是连接elastic后在将数据写入es里; 现在改为通过rpc client，通过调用让远程的机器去写入数据；
+	//其他地方不用改，这样就把itemsaver模块拆出来了
+	itemChan, err := itemsaver.ItemSaver(":1234") //这里用刚才定义的rpc client, 返回chan; 开一个gorouting来调用rpc服务
+	if err != nil {
+		panic(err)
+	}
+
+	if err != nil {
+		panic(err)
+	}
+
+	e := engine.ConcurrentEngine{
+		Scheduler:        &scheduler.QueuedScheduler{},
+		WorkerCount:      100,
+		ItemChan:         itemChan,
+	}
+
+	e.Run(engine.Request{
+		Url: "http://www.starter.url.here",
+		Parser: engine.NewFuncParser(
+			parser.ParseCarList,
+			config.ParseCarList),
+	})
+}
+
+
+三、 先要启动rpc server(itemsave); 没问题后在把爬虫整个运行起来，因为整套的爬虫就含有rpc client
+
+这样就把itemsaver模块，通过rpc的方式拆出来了
+
+1. 首先定义好rpc server(itemsaver); 定义好要做的事情，启动server
+2. engine和itemsaver之间是通过chan来交互的，engine肚子里有一个itemchan，当engine收到item后，会把item送给itemchan
+3. rpc client返回一个chan; 通过chan来接收数据后，起一个gorouting来调用远端的rpc服务
+4. 远端的rpc server(itemsaver)收到后，执行操作将数据写入es里
+5. 将rpc client生成的chan赋給engine, 就可以实现engine和rpc client之间的通信了
+
+这里的rpc client实际就是itemsave的客户端，用来调用itemsave rpc服务器做事情的
+
+定义好rpc server后，然后怎么去调用\什么时候调用这个由rpc client在engine模块中定义的

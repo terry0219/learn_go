@@ -1,0 +1,94 @@
+当engine收到item后，之前我们是直接打印出来的，接下来要实现把这些item存起来
+
+
+engine/concurrent.go
+
+itemCount := 0
+for {
+	result := <- out
+	for _,item := range result.Items {
+		log.Printf("Got Item #%d: %v",itemCount,item)
+		itemCount++
+	}
+	
+	//收到item后，直接调用save存起来是否可以呢？不可以
+	//做为engine，它手里尽快不要做太多事情，收到item后要尽快脱手;就像获取到request后尽快发给scheduler
+	//save(item) 
+	go save(item) //开一个gorouting去save，这种是一个方案
+	go func() {ItemChan <- item}() //或者通过chan的方式把item送出去 
+									//这个项目中大概开10W个gorouting，而且做的事情比较简单，对性能影响不大
+	
+}
+
+如何存储Items？
+1. 为每个Item创建gorouting, 提交给ItemSaver     go func() {ItemChan <- item}()
+
+
+总体架构图:
+
+			  item					Reuqests,items
+ItemSaver <----------- Engine <------------------------- 多个worker
+						 |	
+				Request  |
+						 |
+						 				Request
+						Scheduler------------------->
+						
+1. engine发送Request给Scheduler
+2. Scheduler收到后发送给worker
+3. worker处理完后把处理的结果和下一次要解析的地址和解析器传给engine
+4. engine通过chan把item发送给ItemSaver
+5. ItemSaver收到后存入数据库
+
+
+engine/concurrent.go
+
+type ConcurrentEngine struct {
+	Scheduler Scheduler
+	WorkerCount int
+	ItemChan   chan interface{}  //engine中增加一个ItemChan; 这个ItemChan是需要外界配置的
+								 //哪个模块需要从这个chan接收数据，就在哪个模块上定义这个chan
+}
+
+
+itemCount := 0
+for {
+	result := <- out
+	for _,item := range result.Items {
+		go func() {e.ItemChan <- item}()   //enine拿到item后就送出去
+	}
+	
+	
+persist/itemsaver.go   
+
+package persist
+
+func ItemSaver() chan interface{} {
+	out := make(chan interface{})  //out chan就完成了和engine之间的数据传递
+	go func() {
+		itemCount := 0
+		for {
+			item := <- out
+			log.Printf("Item Saver: got item #%d: %v", itemCount,item)
+			itemCount++
+		}
+	}()
+	
+	return out //out chan就完成了和engine之间的数据传递
+}
+
+
+main.go
+
+func main() {
+	e := engine.ConcurrentEngine(
+		Scheduler: &Scheduler.QueuedScheduler,
+		WorkerCount: 100,
+		ItemChan: persist.ItemSaver(),   //配置engine, 把persist.ItemSaver赋給ItemChan
+	)
+}
+
+
+这样就完成了engine和itemsaver之间的数据传递，通过chan的方式
+
+

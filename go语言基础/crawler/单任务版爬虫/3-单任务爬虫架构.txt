@@ -1,0 +1,49 @@
+
+
+		   城市列表                    ---> 抽象为解析器，城市列表解析器printCityList，第2章写的func printCityList用来用解析城市列表
+	城市1			城市2              ---> 城市解析器，获取当前的城市的用户名和用户URL信息
+用户	用户	用户	用户		   ---> 用户解析器，获取用户的详细信息
+
+爬虫总体算法
+
+1.先获取城市列表(城市名称 城市对应的url)
+2.根据城市的url获取每个用户的URL信息
+3.通过用户URL信息获取他的个人信息
+
+
+解析器 Parser
+	输入: utf-8编码的文本
+	输出: Request{URL, 对应Parser}, Item列表
+	
+单机版爬虫结构：
+
+
+1. 首先有一个Engine
+2. 起始的url,可以理解为是一个种子，http://www.zhenai.com/zhenghun这个网址就是一个种子
+3. 当种子页面seed送给engine后，engine不是马上就开始做，是先加到任务队列里，维护起来；engine就会不断从队列中取任务去做
+4. engine从任务队列中取出任务中的Url后，在送给fetcher模块(从网页上获取数据的模块)
+5. url送给fetcher模块后，fetcher模块返回text utf-8的文本给engine
+6. engine获取到utf-8的文本后，把text文本给解析器Parser
+7. Parser解析器最后返回requests和items; 返回的Requests就是将来要做的，engine在把requests加到任务队列里; 这样就可以源源不断的从任务队列中取新的任务来执行
+
+
+
+											->text
+									  -----------------> Parser
+									       <-requests,items
+
+
+					request					->url
+seed(种子页面) ---------------> Engine ---------------> Fetcher
+								^			<-text							
+								||
+								||
+								||
+								^
+							任务队列
+							
+							
+
+engine模块负责从任务队列中取出新的requests, 取到后送给fetcher模块去获取网页内容，获取到内容后在交给Paser模块解析，解析的结果在放到任务队列中，
+等待下一次执行。
+第一次需要初始化一个种子页面和解析器给engine，engine拿到后就可以一直执行了

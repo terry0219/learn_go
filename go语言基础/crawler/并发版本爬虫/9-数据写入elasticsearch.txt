@@ -1,0 +1,134 @@
+安装es的客户端
+go get github.com/olivere/elastic/v7
+
+
+persist/itemsaver.go
+
+func save(item interface{}) {
+	client, err := elastic.NewClient(
+		// Must turn off sniff in docker
+		elastic.SetSniff(false))
+		
+	if err != nil {
+		panic(err)
+	}
+	
+	//写入数据
+	resp, err := client.Index().Index("dating_profile").Type("zhenai").BodyJson(item).Do(context.Background())
+	if err != nil {
+		panic(err)
+	}
+	
+	fmt.Printf("%+v",resp)
+
+}
+
+在写一个测试文件，测试下看数据是否可以存进去
+persist/itemsaver_test.go
+
+func TestSave(t *testing.T) {
+	profile := model.Profile{
+			Age:        34,
+			Height:     162,
+			Weight:     57,
+			Income:     "3001-5000元",
+			Gender:     "女",
+			Name:       "安静的雪",
+			Xinzuo:     "牡羊座",
+			Occupation: "人事/行政",
+			Marriage:   "离异",
+			House:      "已购房",
+			Hokou:      "山东菏泽",
+			Education:  "大学本科",
+			Car:        "未购车",
+	}
+	
+	save(profile) //调用save函数
+}
+
+写入成功后，使用rest client调用http://xxxx:9200/dating_profile/zhenai/_search 来查看数据
+
+
+-----------------------------------------------
+
+接下来要做的，就是根据id查询到数据后，然后反序列化到结构体里，在跟手写的结构体model.Profile{}比较是不是一样
+
+改造一下save函数，让它存入elastic后返回id和error信息
+
+persist/itemsaver.go
+
+func save(item interface{}) (id string, err error){
+	client, err := elastic.NewClient(
+		// Must turn off sniff in docker
+		elastic.SetSniff(false))
+		
+	if err != nil {
+		return "", err
+	}
+	
+	//写入数据
+	resp, err := client.Index().Index("dating_profile").Type("zhenai").BodyJson(item).Do(context.Background())
+	if err != nil {
+		return "", err
+	}
+	
+	fmt.Printf("%+v",resp)
+	return resp.Id, nil //返回id
+
+}
+
+itemsaver_test.go文件也做一些修改
+persist/itemsaver_test.go
+
+func TestSave(t *testing.T) {
+	expected := model.Profile{
+			Age:        34,
+			Height:     162,
+			Weight:     57,
+			Income:     "3001-5000元",
+			Gender:     "女",
+			Name:       "安静的雪",
+			Xinzuo:     "牡羊座",
+			Occupation: "人事/行政",
+			Marriage:   "离异",
+			House:      "已购房",
+			Hokou:      "山东菏泽",
+			Education:  "大学本科",
+			Car:        "未购车",
+	}
+	
+	id, err := save(profile) //调用save函数，使用id,err去接返回值
+	if err != nil {
+		panic(err)
+	}
+	//然后根据id去查询对应的数据
+	client, err := elastic.NewClient(
+	// Must turn off sniff in docker
+	elastic.SetSniff(false))
+	)
+	
+	if err != nil {
+		return "", err
+	}
+	//查看数据
+	resp, err := client.Get().Index("dating_profile").Type("zhenai").Id(id).Do(context.Background())
+	if err != nil {
+		return "", err
+	}
+	
+	//t.Logf("%+v", resp.Source) //resp.Source实际上是[]byte类型，所以用%s就可以打印字符串了
+	t.Logf("%s", resp.Source)
+	
+	//反序列化到struct
+	var actual model.Profile
+	err = json.Unmarshal(*resp.Source, &actual)
+	if err != nil {
+		return "", err
+	}
+	
+	if actual != expected {
+		t.Errorf("got %v; expected: %v",actual, expected)
+	}
+}
+
+	

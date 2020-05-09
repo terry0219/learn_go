@@ -1,0 +1,293 @@
+
+面向接口编程是一个老生常谈的话题，接口 的作用其实就是为不同层级的模块提供了一个定义好的中间层，上游不再需要依赖下游的具体实现，充分地对上下游进行了解耦。
+
+这种编程方式不仅是在 Go 语言中是被推荐的，在几乎所有的编程语言中，我们都会推荐这种编程的方式，它为我们的程序提供了非常强的灵活性，想要构建一个稳定、健壮的 Go 语言项目，不使用接口是完全无法做到的。
+
+
+工程化的阶段
+
+接口的概念
+	强类型的语言(java c++): 熟悉接口的概念
+	弱类型的语言(php python): 没有接口的概念
+	
+	
+
+import (
+	"fmt"
+	"io/ioutil"
+	"net/http"
+)
+	
+func retrieve(url string) []byte {
+	resp, err := http.Get(url)
+	if err != nil {
+		panic(err)
+	}
+	
+	defer resp.Body.Close()
+	
+	bytes, _ := ioutil.ReadAll(resp.Body)
+	return bytes // string(bytes) 可以将byte类型数据转为string类型
+}
+
+func main() {
+	fmt.Printf("%s\n", retrieve("http://www.baidu.com"))
+}
+
+main函数中必须要调retrieve函数，所以他们之间耦合度很高
+应该要低耦合，用接口可以实现低耦合
+
+
+---------------------------------
+
+多团队合作的项目
+目录:
+~/src/learngo/infra/urlretriever.go  基础架构(网络请求\磁盘读写\数据库访问等)
+
+type Retriever struct{}
+
+func (Retriever) Get(url string) string {
+	resp, err := http.Get(url)
+	if err != nil {
+		panic(err)
+	}
+	
+	defer resp.Body.Close()
+	
+	bytes, _ := ioutil.ReadAll(resp.Body)
+	return string(bytes)
+}
+
+
+目录:
+~/src/learngo/downloader.go
+
+import (
+	"fmt"
+	"imooc.com/ccmouse/learngo/infra"
+)
+
+//因为retriever可能会赋予不同的变量，所以把获取retriever单独提出来
+func getRetriever() infra.Retriever {
+	return infra.Retriever{}
+}
+
+func main() {
+	//这里有一个缺点是，retriever必须得infra小组中定义的Retriever
+	//如果想要返回testing.Retriever的话，这里面的infra都要替换为testing很麻烦
+	var retriever infra.Retriever = getRetriever()
+	// retriever := infra.Retriever{} 这样写更像是一个配置，而不是我们的逻辑
+	fmt.Println(retriever.Get("http://www.baidu.com"))
+}
+
+
+测试团队自己的retriever，目录:
+
+~/src/learngo/testing/Retriever.go
+
+package testing
+
+type Retriever struct{}
+
+func (Retriever) Get(url string) string {
+	return "fake content"
+}
+
+
+从上面代码可以看出，如果两个团队都定义了自己的retriever(infra.retriever和testing.retriever)，main函数如果要改调用的
+retriever的话，需要改更多地方。 
+
+先来思考一下，为什么会有这种不满意的情况，因为go语言是一个强类型的语言，弱类型语言在写代码时，
+是不知道这个变量的类型的，而go语言在编译的时候就知道每个变量的类型; 在动态语言中，比如php python
+只有在运行的时候传入这个retriever才知道类型
+
+接下来用接口的方式来写，我们要让main函数中的
+
+var retriever infra.Retriever = getRetriever()
+var retriever ？ = getRetriever()
+将retriever改为interface类型
+
+retriever不是infra.Retriever类型，而是一个东西; 而且这个东西可以
+retriever.Get("http://www.baidu.com")，可以去Get
+
+不管是infra.Retriever还是testing.Retriever都无所谓，反正只能给我一个Retriever，就能做这个事情;
+就不需要绑定死了
+
+
+downloader.go 使用接口
+
+func getRetriever() retriever {
+	return infra.Retriever{}
+}
+
+//定义retriever为接口类型，Get为它的方法
+type retriever interface {
+	Get(string) string
+}
+
+func main() {
+	//定义变量r的类型为retriever接口，它有Get方法
+	//getRetriever返回具体的对象
+	var r retriever = getRetriever()
+	fmt.Println(r.Get("http://www.baidu.com"))
+}
+
+接口是一个抽象的概念，并没有具体说是个什么东西；只要给的东西可以调用接口里定义的方法就都是可以的。
+
+
+
+------------------------------------------------------
+
+duck typing的概念
+
+go语言是面向接口的语言，像继承、多态等特性，go语言是在接口中实现的
+
+大黄鸭(玩具)是鸭子吗?
+
+从传统类型来看它不是一个鸭子; 
+但是从duck typing的角度来看是一只鸭子，因为它像鸭子，那么它就是鸭子(描述事物的外部行为而非内部结构)
+
+看它是不是鸭子，要从使用者的角度来看，如果从一个吃货的角度来看，大黄鸭就不是鸭子;如果有一个小孩的角度来看，大黄鸭就是鸭子
+
+
+python中的duck typing
+
+#这里的retriever就是一个duck typeing的对象,并且这个对象有一个get方法，downloader函数就是一个使用者，它使用了duck typing;
+def downloader(retriever):
+	return retriever.get("http://www.baidu.com")
+
+运行时才知道传入的retriever有没有get方法
+
+downloader函数是使用者，retriever是实现者
+
+接口是由使用者定义的
+
+	
+-----------------------------------------------------------------------------------------------
+
+实现多态: 
+
+多态功能是interface实现的重要功能，也是Golang中的一大行为特色，其多态功能一般要结合Go method实现，作为函数参数可以容易的实现多态功能
+
+package main
+
+import "fmt"
+
+// notifier是一个定义了通知类行为的接口
+type notifier interface {
+　 notify()
+}
+
+// 定义user及user.notify方法
+type user struct {
+　 name　string
+　 email string
+}
+
+func (u *user) notify() {
+　 fmt.Printf("Sending user email to %s<%s>\n",
+　　　 u.name,
+　　　 u.email)
+}
+
+// 定义admin及admin.notify方法
+type admin struct {
+　 name　string
+　 email string
+}
+
+func (a *admin) notify() {
+　 fmt.Printf("Sending admin email to %s<%s>\n",
+　　　 a.name,
+　　　 a.email)
+}
+
+func main() {
+　 // 创建一个user值并传给sendNotification
+　 bill := user{"Bill", "bill@email.com"}
+　 sendNotification(&bill)
+
+　 // 创建一个admin值并传给sendNotification
+　 lisa := admin{"Lisa", "lisa@email.com"}
+　 sendNotification(&lisa)
+}
+
+// sendNotification接受一个实现了notifier接口的值
+// 并发送通知
+func sendNotification(n notifier) {
+　 n.notify()
+}
+
+
+-----------------------------------------------------------------------------------------
+
+接口类型是对其它类型行为的抽象和概括；因为接口类型不会和特定的实现细节绑定在一起，通过这种抽象的方式我们可以让我们的函数更加灵活和更具有适应能力。
+
+接口是双方约定的一种合作协议。接口实现者不需要关心接口会被怎样使用，调用者也不需要关心接口的实现细节。接口是一种类型，也是一种抽象结构，不会暴露所含数据的格式、类型及结构。
+
+Go语言提供的很多包中都有接口，例如 io 包中提供的 Writer 接口：
+type Writer interface {
+    Write(p []byte) (n int, err error)
+}
+这个接口可以调用 Write() 方法写入一个字节数组（[]byte），返回值告知写入字节数（n int）和可能发生的错误（err error）。
+
+func test(r io.Writer) {
+	//a := []byte("test 我")   a == [116 101 115 116 32 230 136 145]  中文占用3字节
+	r.Write(a) 
+}
+
+知识点: r的类型是Interface，这个interface实现了Write方法； 所有只要传给r的变量实现了Write方法就可以
+
+
+Go语言的每个接口中的方法数量不会很多。Go语言希望通过一个接口精准描述它自己的功能，而通过多个接口的嵌入和组合的方式将简单的接口扩展为复杂的接口。本章后面的小节中会介绍如何使用组合来扩充接口
+
+
+接口定义后，需要实现接口，调用方才能正确编译通过并使用接口。接口的实现需要遵循两条规则才能让接口可用
+
+1. 接口的方法与实现接口的类型方法格式一致
+2. 接口中所有方法均被实现
+
+
+数据写入器的抽象:
+
+package main
+import (
+    "fmt"
+)
+// 定义一个数据写入器 
+//定义 DataWriter 接口。这个接口只有一个方法，即 WriteData()，输入一个 interface{} 类型的 data，返回一个 error 结构表示可能发生的错误。
+type DataWriter interface {
+    WriteData(data interface{}) error
+}
+
+
+// 定义文件结构，用于实现DataWriter
+type file struct {
+}
+
+
+
+// 实现DataWriter接口的WriteData方法
+//file 的 WriteData() 方法使用指针接收器。输入一个 interface{} 类型的 data，返回 error
+func (d *file) WriteData(data interface{}) error {
+    // 模拟写入数据
+    fmt.Println("WriteData:", data)
+    return nil
+}
+
+
+func main() {
+    // 实例化file f 的类型为 *file
+    f := new(file)
+	
+    // 声明 DataWriter 类型的 writer 接口变量
+    var writer DataWriter
+	
+    // 将接口赋值f，也就是*file类型
+	//将 *file 类型的 f 赋值给 DataWriter 接口的 writer，虽然两个变量类型不一致。但是 writer 是一个接口，且 f 已经完全实现了 DataWriter() 的所有方法，因此赋值是成功的
+    writer = f
+	
+    // 使用DataWriter接口进行数据写入
+    writer.WriteData("data")
+}
+

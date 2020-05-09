@@ -1,0 +1,85 @@
+worker的rpc服务端完成后，就要看worker的客户端了
+
+之前worker的实现是在crawler/engine/concurrent.go里面，调用了createWorker, createWorker里调用的Worker
+
+关键在于这行， result, err := Worker(request) , 只要把Worker(request) 换成 call rpc就可以了
+
+换成rpc的话，就需要在外面进行配置
+
+crawler/engine/concurrent.go
+
+type ConcurrentEngine struct {
+	Scheduler  Scheduler
+	WorkerCount int
+	ItemChan  chan Item
+	RequestProcessor  Processor   //新增一个函数类型的参数
+}
+
+type Processor func(Request) (ParseResult, error)  //和worker函数类型一样
+
+把原来的createWorker函数修改一下
+
+func(e *ConcurrentEngine) createWorker(
+	...
+	result, err := e.RequestProcessor(request) //调用RequestProcessor
+)
+
+crawler/main.go也需要调整一下
+
+e := engine.ConcurrentEngine{
+	Scheduler: &Scheduler.QueueScheduler{},
+	WorkerCount: 100,
+	ItemChan: itemChan,
+	RequestProcessor: engine.Worker,  //增加的
+}
+
+
+这还是单机版的,可以先运行下看是否正常
+
+接下来改分布式版本
+
+
+crawler_distributed/worker/client/worker.go
+
+func CreateProcessor() (engine.Processor, nil) ( 
+	//client变量通过函数式编程放进去函数里面
+	client, err := rpcsupport.NewClient(fmt.Sprintf(":%d",config.WorkerPort0))
+	if err != nil {
+		return nil, err
+	}
+	
+	return func(req engine.Request, engine.ParseResult, error) {
+		//先将request序列化为结构体类型才能call rpc
+		sReq := worker.SerializeRequest(req)
+		var sResult worker.ParseResult //sResult变量是worker rpc服务端返回的
+		//调用rpc
+		err := client.Call(config.CrawlServiceRpc, sReq, &sResult)
+		
+		if err != nil {
+			return engine.ParseResult{}, nil
+		}
+		return worker.DeserializeResult(sResult),nil //调用成功后，把sResult反序列化为可以真正可以工作的函数
+	}, nil
+)
+
+CreateProcessor函数只是做了参数类型的转换，然后调用worker rpc服务，让worker rpc服务器来执行
+
+
+crawler_distributed/main.go
+
+func main() {
+	processor, err := client2.CreateProcessor()
+	e := engine.ConcurrentEngine{
+			Scheduler: &Scheduler.QueueScheduler{},
+			WorkerCount: 100,
+			ItemChan: itemChan,
+			RequestProcessor: processor,  //调用的地方
+		}
+}
+
+
+把itemsave模块的main.go可以改为itemsaver.go; worker模块的main.go改为worker.go
+
+
+运行爬虫主程序前，把itemsaver和worker服务都启动起来
+

@@ -1,0 +1,79 @@
+依赖管理的三个阶段: GOPATH 、  GOVENDOR 、 go mod
+
+
+
+GOPATH 默认路径在~/go(unix,linux)， windows系统默认路径在%USERPROFILE%\go
+
+#mkdir /tmp/gopathtest
+#cd /tmp/gopathtest
+#go env  查看GOPATH变量
+#go env -w GOPATH='/tmp/gopathtest' 全局更改，如果是临时测试就不需要执行这个
+
+#export GOPATH=/tmp/gopathtest
+#mkdir /tmp/gopathtest/src    必须要创建一个$GOPATH/src目录
+
+#go get -u go.uber.org/zap  从go.uber.org网站中下载zap包; /tmp/gopathtest/src/go.uber.org
+
+在/tmp/gopathtest/src/project1中创建一个zaptest.go
+
+import "go.uber.org/zap"  //实际上是去$GOPATH/src/go.uber.org/zap 目录去找的
+
+func main() {
+	log, err := zap.NewProduction()
+	log.Warn("test")
+}
+
+
+
+--------------------------------------------------------------
+
+GOVENDOR
+
+在每个项目里面新建一个vendor目录
+#mkdir /tmp/gopathtest/src/project1/vendor
+#mkdir /tmp/gopathtest/src/project2/vendor
+
+可以将/tmp/gopathtest/src/go.uber.org目录拷一份到每个项目中的vendor目录中，这样project1去调用zap包时会先去vendor目录找
+
+解决的问题： 每个项目可能依赖zap包的版本会有不同，这样会优先找vendor目录下的包，没有在去找$GOPATH/src
+
+每个项目创建自己的vendor目录，用来存放第三方库
+大量第三方的依赖管理工具: glide, dep, go dep
+
+
+-----------------------------------------------------------------
+
+go mod使用
+
+
+go env执行后会有一个GOPROXY的变量，当go get命令去下载包时会用到这个代理地址，下载速度会快一些。GOPROXY: https://goproxy.cn,direct
+
+
+#mkdir ~/src/gomodtest   在家目录创建一个src/gomodtest目录
+
+在go mod的环境下执行,go get -u go.uber.org/zap 
+
+在go.mod文件中，会生成require
+
+在~/src/gomodtest目录中，编辑一个zaptest.go文件
+
+import "go.uber.org/zap"  //这个目录是从~/go/pkg/mod/go.uber.org/zap@1.12.0/logger.go中导入的
+
+
+go get -u go.uber.org/zap@1.12.0   指定版本下载
+
+由go命令统一的管理，用户不必关心目录结构
+
+将旧项目迁移到go mod:  go mod init , go build ./...
+
+
+go build ./...   编译当前目录以及子目录中的.go文件
+go install ./... 生成二进制文件，生成的位置在$GOPATH/bin目录里
+
+
+
+
+
+
+
+ 

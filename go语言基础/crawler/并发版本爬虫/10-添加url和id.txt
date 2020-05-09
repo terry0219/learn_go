@@ -1,0 +1,54 @@
+1. 缺少用户的Url信息
+2. 现在存的id是elasticsearch分配的id，如果下次在运行爬虫程序，会有重复的数据；所以需要一个用户id，保证用户的唯一性
+
+
+最简单的做法是在Profile结构体中加入url和id
+
+type Profile struct {
+	Url string     //用户的url
+	Id  string    //去重复用的
+	Name string
+	...
+}
+
+但是url和id这两个信息是比较通用的部分，非常有价值。如果爬其他数据也是需要这两个信息的
+
+engine/types.go
+
+type ParseResult struct {
+	Reuqests []Request
+	Items    []Item     //修改Items的类型为[]item
+}
+
+//定义item, 添加Url和Id
+type Item struct {
+	Url string
+	Id  string
+	Type  string   //相当前elasticsearch的表名
+	Payload interface{}
+}
+
+
+返回一个error可以这样写
+
+if item.Type == "" {
+	return errors.New("must supply type")
+}
+
+----------------------------------------------------------------------------------------------
+
+func FromJsonObj(o interface{}) (Profile,err) {
+	var profile Profile
+	s, err := json.Marshal(o)  //json.Marshal序列化返回一个string
+	if err != nil {
+		return profile, err
+	}
+	
+	err = json.Unmarshal(s, &profile)//json.Unmarshal反序列化返回一个Profile类型struct
+	return profile, err
+	
+}
+
+
+url是string类型，如果要转成[]byte类型的话，就用[]byte(url)
+

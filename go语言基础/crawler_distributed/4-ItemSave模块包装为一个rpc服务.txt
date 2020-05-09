@@ -1,0 +1,125 @@
+一、先把rpc服务端包装一下(启动rpc监听端口的，注册方法)， 后面可以通过调用ServerRpc来启动rpc服务
+
+crawler_distributed/rpcsupport/rpc.go
+
+func ServeRpc(host string, service interface{}) error{
+	//注册rpc函数
+	//rpc.Register(rpcdemo.DemoService{})
+	rpc.Register(service)
+	
+	//监听1234端口
+	//listener, err := net.Listen("tcp",":1234")
+	listener, err := net.Listen("tcp", host)
+	if err ！= nil {
+		return err
+	}
+	
+	//接收传入的连接
+	for {
+		conn, err := listener.Accept()
+		if err != nil {   //如果有报错，打印日志继续接收连接
+			log.Printf("accept error: %v", err)
+			continue
+		}
+		go jsonrpc.ServeConn(conn) //如果不用gorouting的话，这个正在操作的时候就没法接收下一个连接了
+		
+	}
+	
+	return nil //虽然程序可能执行不到这里，但是也是返回，不然会编译错误
+}
+
+二、 rpc client也要包装一下，后面通过NewClient来调用客户端
+
+crawler_distributed/rpcsupport/rpc.go
+
+func NewClient(host string) (*rpc.Client, error){  //返回一个*rpc.Client类型
+	conn, err := net.Dial("tcp", host)
+	if err != nil {
+		return nil,err
+	}
+	client := jsonrpc.NewClient(conn)
+	return client, nil
+}
+
+client端调用NewClient后，就可以直接调用Call方法了
+
+1,2步主要用于封装rpc的服务端和客户端，方便后面调用
+
+
+
+三、先将itemsave模块包装为一个rpc(并不是重写之前的itemsave,这里会调用之前的save方法) 
+定义要注册的函数，也就是具体要做的事情。客户端可以通过ItemSaverService.Save来调用
+
+crawler_distributed/persist/rpc.go
+import "imooc.com/ccmouse/learngo/crawler/persist"
+
+package persist
+
+type ItemSaverService struct {  //itemsave模块的主要作用就是将数据写入es,所以它肚子里有elastic的client和对应的index名称
+	Client *elastic.Client		//这两个参数需要外面告诉它
+	Index string
+}
+
+func(s *ItemSaverService) Save(item engine.Item, result *string) error { //因为rpc服务需要两个参数，所以就定义了一个result
+
+	//这里面应该要调用之前itemsaver里的save方法来保存数据到es中
+	err := persist.Save(s.Client, s.Index, item)
+	if err == nil {
+		*result = "ok"
+	}
+	return err
+}
+
+第3步定义方法，将收到的item存入es里
+
+
+四、接下来就设置rpc server端; 调用rpcsupport.ServeRpc，将定义的方法注册上去
+
+crawler_distributed/persist/server/main.go
+
+func main() {
+	log.Fatal(serveRpc(":1234", "dating_profile"))
+}
+
+func serveRpc(host string, index string) error {
+	client, err := elastic.NewClient(elastic.SetSniff(false))
+	if err != nil {
+		return err
+	}
+	
+	return rpcsupport.ServeRpc(host, &persist.ItemSaverService{ //将ItemSaverService注册是rpc上了;
+			Client: client,										//客户端就可以通过ItemSaverService.Save来调用了
+			Index: index,
+	})
+	
+	
+	
+}
+第4步才是真正的启动服务
+
+五、写一个测试文件来测试rpc server
+
+crawler_distributed/persist/server/client_test.go
+
+package main
+
+func TestItemSaver(t *testing.T) {
+	const host = ":1234"
+	// 1. start ItemSaverService
+	go serveRpc(host, "test1")
+	time.Sleep(time.Second)  //这里如果不sleep的话，server端还没来的及listen， client就已经去连1234端口了
+	
+	// 2. start ItemSaverClient
+	client, err := rpcsupport.NewClient(host)
+	if err != nil {
+		panic(err)
+	}
+	// 3. Call save
+	result := ""
+	item := engine.Item{}  //测试数据
+	client.Call("ItemSaverService.Save", item, &result)
+	if err != nil || result != "ok" {
+		t.Errorf("result: %s; err: %s", result, err)
+	}
+	
+}

@@ -1,0 +1,182 @@
+上一章的简单调度器
+现在的这种架构已经够快了，但是这个架构有一个缺点是控制力很小，为每个request创建的gorouting，分发出去后就收不回来了,不知道它们在外面怎么样;
+所有的worker都在抢同一个channel里的东西，也没办法控制把request给哪个worker，如果想做一些负载均衡的事情就做不了，虽然性能现在也是可以的。
+
+scheduler实现: Request队列和Worker队列
+
+把Request和Worker都放到队列里面
+
+1. Scheduler收到Request后，把Request放到Request队列里，既然有Request队列，那么它里面就有一个活动的request可以分发给worker
+2. 同时又希望能对worker进行强大的控制，我们希望可以从这些worker中选择想要的worker，所以还需要一个worker队列
+3. 这样就可以把我们选择的request发给我们选择的worker
+
+这里要注意，每个worker都有一个独立的channel，如果有100个worker在执行，那么就有100个channel; 这和上一节中简单调度器的策略是不一样的，它是所有
+worker去抢同一个channel。
+
+
+scheduler/queued.go
+
+package scheduler
+
+//在这个架构里,Scheduler调度器是单独一个gorouting; scheduler和 engine\worker都是通过channel来连接的
+//因此Scheduler肚子里有两个channel;
+type QueuedScheduler struct {       
+
+	//requestChan和workerChan是这个结构体中共用的部分，但是WorkerChan里面的chan engine.Request，是每个worker独立的
+	requestChan chan engine.Request	// engine向requestChan发送数据
+	workerChan chan chan engine.Request // 每一个worker都有独立的chan(chan engine.Request), 这些chan在灌倒同一个chan里
+					//workerChan chan里面是什么类型呢，chan是一个worker类型，那worker是什么类型呢，worker中的in chan是engine.Request类型
+					
+					//每个worker都有不同的channel, 如果有100个worker在执行，那么就有100个channel。这100个channel在灌在同一个chan里
+}
+
+func (s *QueuedScheduler) Submit(r engine.Request) { //定义submit方法，当engine调用submit方法时，就将reqeust发送到requestChan里
+	s.requestChan <- r
+}
+
+func (s *QueuedScheduler) WorkerReady(w chan engine.Request) { //从外界告诉我们有一个worker可以接收request
+	s.workerChan <- w			//把worker需要的chan 发送到s.WorkerChan里				
+}
+
+//起一个负责总控的gorouting
+func (s *QueuedScheduler) Run() { //因为会改变s的内容，所以是指针类型
+	s.workerChan = make(chan chan engine.Request) //生成两个channel
+	s.requestChan = make(chan engine.Request)
+	
+	go func(){                       //开1一个gorouting来执行
+		var requestQ []engine.Request		//在外面定义requestQ workerQ
+		var workerQ []chan engine.Request
+		
+		for {
+			//r := <- s.requestChan
+			//w := <- s.workerChan
+			var activeRequest engine.Request     //在外面定义activeRequest变量类型，这样在if操作后，作用域就是全局
+			var activeWorker chan engine.Request
+			
+			if len(requestQ) > 0 && len(workerQ) > 0 {  //如果既有request还有workchan，就可以发送request到workchan
+				activeRequest = requestQ[0]
+				activeWorker = workerQ[0]
+			
+			}
+			//接收requestChan和接收workerChan是两个独立的事情，所以在代码里也要独立的去收; 这两个chan有可能同时有或者同时没有，所有用select{}
+			select {
+				case r := <- s.requestChan:
+					requestQ = append(requestQ, r)  //收到request后加入队列排队
+				case w := <- s.workerChan:
+					workerQ = append(workerQ, w)   //收到workchan后加入队列排队
+				case activeWorker <- activeRequest: //当有活动的request和workchan就发送;这边发送，对应worker那里request := <- in 收
+					requestQ = requestQ[1:]   //发送成功后，要把当前的request从队列中拿掉
+					workerQ = workerQ[1:]		 //发送成功后，要把当前的work从队列中拿掉
+												//workQ里面都是chan engine.Request类型
+			}
+		}
+	
+	}()
+}
+
+
+
+engine/concurrent.go
+
+type ConcurrentEngine struct {
+	Scheduler Scheduler
+	WorkerCount int
+}
+
+type Scheduler interface {
+	Submit(Request)
+	WorkerReady(chan Request)  //在添加两个方法，因为QueuedScheduler调度器实现了WorkReady和Run方法
+	Run()
+}
+
+func (e *ConcurrentEngine) Run(seeds ...Request) {
+	out := make(chan ParseResult) //定义chan,从worker输出的
+	e.Scheduler.Run() //先调用Scheduler.Run()方法，它会创建两个channel,然后开启一个gorouting，等待新任务的到来
+
+	for i := 0; i < e.WorkerCount; i++ { //然后去创建worker
+		createWorker(out, e.Scheduler)  //worker有两个形参，一个是out chan，另外一个把e.Scheduler传进去
+										//e.Scheduler就是具体实现这些方法的结构体
+	}
+
+	for _, r := range seeds {
+		e.Scheduler.Submit(r)  //将r发送给requestChan队列
+	}
+
+	for {
+		result := <-out
+		for _, item := range result.Items {
+			go func(i Item) {
+				e.ItemChan <- i
+			}(item)
+		}
+
+		for _, request := range result.Requests {
+			e.Scheduler.Submit(request)
+		}
+	}
+}
+
+//这里out chan是公共部分，in chan是函数内部的; 也就是说每个worker有独立的in chan，当处理完把数据发送到out chan(是公共的部分，engine会去接收out)
+func createWorker(out chan ParseResult, s Scheduler) {  //s是Interface类型
+
+	in := make(chan Request)
+	go func() {
+		for {
+			s.WorkerReady(in) //tell scheduler I am ready  把in chan通过interface传给scheduler
+			request := <- in                 //这里接收; 对应Scheduler中的case activeWorker <- activeRequest发送
+			result, err := worker(request)
+			if err != nil {
+				continue
+			}
+			out <- result
+		}
+	}()
+}
+
+知识点:
+//createWorker(out chan ParseResult, s Scheduler)  out是公共的chan，用于将数据发送出去的; s Scheduler 这是一个interface类型
+// s.WorkerReady(in) 调用WorkerReady方法; 只要实现了WorkerReady方法的结构体都可以传给它
+// 当函数A的形参有interface类型的参数的时候，就可以把函数内的变量传给这个interface的方法；当实现了这个interface方法的B结构体赋值给函数后;
+// 函数内的变量就可以传给B结构体了
+// createWorker函数就是将函数内部的in chan,通过interface传给了Scheduler
+
+main.go
+
+func main() {
+	e := engine.ConcurrentEngine{
+		Scheduler: &scheduler.QueuedScheduler{},
+		WorkerCount:10,
+	}
+	
+	e.Run(engine.Request{
+		Url: "http://www.zhenai.com/zhenghun",
+		ParserFunc: parser.ParseCityList,
+	})
+}
+
+
+----------------------------------------------------------------------------------------------
+
+总结:
+
+有3个功能模块，Engine、Scheduler、CreateWorker
+
+1.这三个模块之间公共的部分，在Engine中定义，然后传给Scheduler，CreateWorker; 公共部分比如chan,初始化页面
+2.每个模块内有自己的局部变量，比如CreateWorker中的in chan，因为这里定义每个worker都有独立的in chan，所以定义在CreateWorker函数内部
+3.重要知识点: interface的使用
+	(1) Scheduler这个结构体，先定义好它肚子里有什么东西(这个例子里面是两个chan)
+	(2) 然后在根据肚子里的东西来定义方法，比如像Submit、WorkReady，分别对两个chan进行操作
+	(3) 最后为Scheduler结构体定义了Run方法，初始化两个channel并开一个gorouting，对这两个channel进行接收数据处理
+	
+	(4) 定义好interface类型及里面的方法，Scheduler结构体实现了这个接口; 这样的话engine结构体中定义的方法就可以调用接口中方法，比如s.Scheduler.Run()
+	(5) 因为engine结构体里有一个Scheduler的接口，所以只要实现了Scheduler中的所有方法的结构体都可以传给engine
+	(6) 最后在调用前，初始化传值 e := engine{Scheduler: &Scheduler.QueuedScheduler}， e.Run()
+	(7) 通过interface的方式实现了两个不同结构体之间的调用
+	
+	(8) 使用channel必须要有发送和接收，分别开两个gorouting进行发送和接收
+	
+	(9) 如果有多个channel同时操作的话，使用select{}
+	
+	
+	
+	

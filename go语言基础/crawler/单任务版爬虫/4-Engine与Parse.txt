@@ -1,0 +1,149 @@
+代码整理一下
+
+//fetcher模块， 输入一个url,输出是一个[]byte  主要用html页面的内容转为utf-8编码
+fetcher/fetcher.go
+
+func Fetch(url string) ([]byte, error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil,err
+	}
+
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil,fmt.Errorf("wrong status code: %d",resp.StatusCode)
+	}
+	
+	e := determineEncoding(resp.Body)
+	utf8Reader := transform.NewReader(resp.Body, e.NewDecoder())
+	return ioutil.ReadAll(utf8Reader)
+	
+}
+
+
+func determineEncoding(r io.Reader) encoding.Encoding {
+	bytes, err := bufio.NewReader(r).Peek(1024) //读1024Byte
+	if err != nil {
+		log.Printf("Fetcher error: %v", err)
+		return unicode.UTF8
+	}
+	e,_,_ := charset.DetermineEncoding(bytes,"")
+	return e
+}
+
+-----------------------------------------------------------------------------------
+定义parse解析器返回的结构类型 Request{Url ParserFunc} 返回的url和对应的解析器;Items是具体返回的数据
+
+engine/types.go       
+
+type Request struct { //Request结构体定义了url和对应的解析器函数，这个函数有一个[]byte参数，返回ParseResult类型
+	Url string
+	ParserFunc func([]byte) ParseResult
+}
+
+type ParseResult struct {
+	Requests []Request    //Request也是一个struct
+	Items []interface{}
+}
+
+
+先写一个空的parse，用于测试
+func NilParser([]byte) ParseResult {
+	return ParseResult{}
+}
+
+---------------------------------------------------
+
+接下来创建Parse解析器，按业务来分;fetcher模块处理完成后，传给parser模块; parse解析器解析后，把对应的url和解析器加入队列slice里，等待下一次的调用
+
+zhanai/parse/citylist.go
+
+const cityListRe = `<a href="(http://www.zhenai.com/zhenghun/[0-9a-z]+)"[^>]*>([^<]+)</a>`
+func ParseCityList(contents []byte) engine.ParseResult {
+	re := regexp.MustCompile(cityListRe) 
+	matches := re.FindAllSubmatch(contents,-1)
+	
+	result := engine.ParseResult{}
+	for _,m := matches {
+		result.Items = append(result.Items, m[2])  把城市名称写到Items里
+		result.Requests = append(result.Requests, engine.Request{
+							"Url":string(m[1]),
+							"ParserFunc": engine.NilParser, //ParserFunc的值是一个函数类型 func([]byte) ParseResult
+											//传函数类型的时候，只要传函数名称即可; 如果有参数在调用时候执行
+		})
+		
+		fmt.Printf("City: %s, URL: %s",m[2], m[1])
+	}
+
+	fmt.Printf("Matches found: %d\n", len(matches))
+	
+	return result
+}
+
+---------------------------------------------------------
+
+接下来实现引擎engine/engine.go
+
+package engine
+
+//这里Request和ParseResult两个结构体设计的比较巧妙
+
+type Request struct {
+	Url string
+	ParserFunc func([]byte) ParseResult
+}
+
+type ParseResult struct {   //各个解析器解析后的类型
+	Requests []Request          Request是{Url ParserFunc} 类型
+	Items []interface{}
+}
+
+func Run(seeds ...Request) {      seeds是Reuqest类型的struct {Url ParserFunc}
+	var requests []Request        定义队列
+	
+	for _, r := range seeds {
+		requests = append(requests, r) 将种子页面添加到队列中
+	}
+	
+	for len(requests) > 0 {
+		r := requests[0]            //取第一个request
+		requests = requests[1:]
+		
+		log.Printf("Fetching %s", r.Url)
+		
+		body, err := fetcher.Fetch(r.Url)   //调用fetcher模块，取html文本
+		if err != nil {
+			log.Printf("Fetcher: error "+
+					"fetching url %s: %v",
+					r.Url, err)
+			continue	
+		}
+		//body取出来后送给Parser
+		parseResult := r.ParserFunc(body) //这边就是调用对应的解析器函数, body是[]byte类型
+		requests = append(requests, parseResult.Requests...) 合并slice到requests里
+		
+		for _, item := range parseResult.Items {
+			log.Printf("Got item %v", item)
+		}
+			
+	}
+	
+}
+//Run函数中，源源不断的从队列中获取Request{Url ParserFunc}，先取出r.Url送给Fetcher模块，Fetcher处理后返回body,类型是[]byte给engine;
+//engine收到后，通过r.ParserFunc(body)去调用解析器，返回ParseResult
+//从ParseResult里面获取Requests，追加到requests这个slice里
+---------------------------------------------------------------------
+
+main函数最后调用enging.Run()
+
+main.go
+
+package main
+
+func main() {
+	engine.Run(engine.Request{
+		Url: "http://www.zhenai.com/zhenghun",
+		ParserFunc: parser.ParseCityList,
+	})
+}
+

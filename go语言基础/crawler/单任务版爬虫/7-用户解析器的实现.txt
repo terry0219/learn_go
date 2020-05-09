@@ -1,0 +1,124 @@
+获取用户的详细信息
+
+model/profile.go
+
+定义用户的结构体
+type Profile struct {
+	Name       string
+	Gender     string
+	Age        int
+	Height     int
+	Weight     int
+	Income     string
+	Marriage   string
+	Education  string
+	Occupation string
+	Hokou      string
+	Xinzuo     string
+	House      string
+	Car        string
+}
+
+--------------------------------------------
+
+zhenai/parser/profile.go
+
+package parser
+
+//编写获取用户信息的正则
+const ageRe = `<td><span class="label">年龄: </span>([\d]+)岁</td>` //年龄的正则表达式 [\d]+ 匹配1个或多个数字
+//const marriageRe = `<td><span class="label">婚况: </span>离异</td>`
+const marriageRe = `<td><span class="label">婚况: </span>([^<]+)</td>` //婚况的正则表达式 [^<]+ 匹配1个或多个，除了<
+
+
+func ParseProfile(contents []byte) engine.ParseResult {
+	profile := model.Profile{}  //实例化结构体
+	
+	//匹配年龄
+	re := regexp.MustCompile(ageRe)
+	match := re.FindSubmatch(contents)
+	
+	if match != nil { //match不等于nil说明匹配成功;match如果是nil，说明没有匹配成功
+		age, err := strconv.Atoi(string(match[1]))   //match[1]代表第一个括号匹配的内容 这时age是字符串类型，需要转为int类型
+		
+		if err != nil {
+			profile.Age = age
+		}
+			
+	}
+
+	//匹配婚况
+	re := regexp.MustCompile(marriageRe)
+	match := re.FindSubmatch(contents)
+	
+	if match != nil { //match不等于nil说明匹配成功;match如果是nil，说明没有匹配成功
+		profile.Marriage = string(match[1])   //match[1]代表第一个括号匹配的内容 这时age是字符串类型，需要转为int类型
+	}	
+	//从上面代码来看，有可以提出来东西
+}
+
+-----------------------------------------------------------------------------------
+
+
+从上面代码来看，每次用户访问都要有好多次的re.MustCompile，这样不好，所以在编译的时候就让它MustCompile; 预先编译好
+
+const ageRe = regexp.MustCompile(`<td><span class="label">年龄: </span>([\d]+)岁</td>`) //年龄的正则表达式 [\d]+ 匹配1个或多个数字
+//const marriageRe = `<td><span class="label">婚况: </span>离异</td>`
+const marriageRe = regexp.MustCompile(`<td><span class="label">婚况: </span>([^<]+)</td>`) //婚况的正则表达式 [^<]+ 匹配1个或多个，除了<
+
+
+func ParseProfile(contents []byte) engine.ParseResult {
+	profile := model.Profile{}  //实例化结构体
+	
+	
+	//公共部分提取出后就简洁很多了
+	
+	//匹配年龄
+	age, err := strconv.Atoi(extractString(contents,ageRe))
+
+	if err != nil {
+		profile.Age = age
+	}
+	
+	
+	//匹配婚况
+	profile.Marriage = extractString(contents,marriageRe) 
+	
+	result := engine.ParseResult{
+		Items: []interface{}{profile},   //取到用户详细信息后，就没有新的requests里，所以只给Items赋值就可以了。
+	}
+	
+	return result
+}
+
+func extractString(contents []byte, re *regexp.Regexp) string {
+	match := re.FindSubmatch(contents)
+	
+	if len(match) >= 2 {
+		return string(match[1])
+	} else {
+		return ""
+	}
+}
+/*
+公共部分提取出来的思路整理; contents是要传进来的形参，正则对象re也是要传进来的参数
+match := ageRe.FindSubmatch(contents)
+match := marriageRe.FindSubmatch(contents)
+......
+
+先找出这些公共的部分
+1. contents 
+2. 返回的都是字符串
+
+不一样的地方:
+1. ageRe   marriageRe  这些正则表达式，每个都不一样，所以可以提出出来做参数
+
+
+重要:
+可以理解为把match := ageRe.FindSubmatch(contents) 这个方法封装到一个函数中，因为它返回的是字符串类型，所以
+封装的函数也是返回字符串类型，在封装的函数内部在调用ageRe.FindSubmatch(contents)这个方法。
+
+
+
+
+*/
